@@ -1,0 +1,67 @@
+# case.yaml — one file per test case, placed inside the cases/ directory.
+# Every field except `name`, `objects`, and `steps` is optional.
+
+# Required. Human-readable identifier; shown in log output.
+name: my-case
+
+# Optional. Longer description for documentation purposes.
+description: ""
+
+# Optional. Labels merged onto every object applied in this case, additive over
+# the test-level labels defined in test.yaml.
+labels:
+  key: value
+
+# Optional. Annotations merged onto every object applied in this case.
+annotations:
+  key: value
+
+# Optional. Case-level object registry: maps a resource name to the template
+# base-filename (without .yaml) that renders it.
+#
+# The key becomes the Kubernetes object name injected automatically into every
+# template render — you never need to put `name` in step values.
+# Steps reference objects by their key. Only Ensure uses the step's values to
+# populate the full spec; all other actions use name + GVK for identity only.
+#
+# Example:
+#   nginx: deployment      # object name "nginx", template "deployment.yaml"
+#   app-config: configmap  # object name "app-config", template "configmap.yaml"
+objects:
+  my-resource: my-template
+
+# Required. Ordered list of steps to execute sequentially.
+steps:
+  # ── Step ──────────────────────────────────────────────────────────────────
+
+  # Required. Step name shown in log output.
+  - name: my-step
+
+    # Optional. Longer description.
+    description: ""
+
+    # Optional. When true, a step failure is logged as a warning and execution
+    # continues with the next step instead of aborting the case.
+    optional: false
+
+    # Optional. Labels added to the rendered object for this step only.
+    labels:
+      key: value
+
+    # Optional. Annotations added to the rendered object for this step only.
+    annotations:
+      key: value
+
+    # Required. Key from the case-level objects map identifying which resource
+    # this step operates on. The key is also the Kubernetes object name.
+    object: my-resource
+
+    # Required. One or more actions executed against the object.
+    # See action.yaml for the full action reference.
+    # Ensure is the only action that carries values; all others identify the
+    # object by name + GVK and operate on live cluster state.
+    actions:
+      - command: Ensure
+        values:
+          replicas: 1
+          image: nginx:1.25-alpine

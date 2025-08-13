@@ -1,0 +1,17 @@
+name: rollout
+description: Ensure the deployment rolls out and all replicas become ready
+
+objects:
+  nginx: deployment
+
+steps:
+  - name: deploy
+    object: nginx
+    actions:
+      - command: Ensure
+        values:
+          replicas: 2
+      - command: Wait
+        timeout: 2m
+        conditions:
+          - .status.readyReplicas == .spec.replicas

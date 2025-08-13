@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: DCO
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Signed-off-by
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          BASE="$BASE_REF"
+          HEAD="$HEAD_REF"
+
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            COMMITS=$(git log --no-merges --format='%H' -1 "$HEAD")
+          else
+            COMMITS=$(git log --no-merges --format='%H' "${BASE}..${HEAD}")
+          fi
+
+          MISSING=0
+          while IFS= read -r sha; do
+            [ -z "$sha" ] && continue
+            body=$(git log -1 --format='%B' "$sha")
+            if ! echo "$body" | grep -qE '^Signed-off-by: .+ <[^@]+@[^@]+>$'; then
+              echo "::error::Commit $sha is missing a Signed-off-by trailer"
+              MISSING=1
+            fi
+          done <<< "$COMMITS"
+
+          [ "$MISSING" -eq 0 ] && echo "DCO check passed."
+          exit $MISSING
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test -race -count=1 ./...
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9.2.1
+        with:
+          version: latest
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binary
+        run: CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/kube2e

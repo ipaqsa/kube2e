@@ -1,0 +1,11 @@
+name: flaky
+description: This case is listed in test.yaml ignored and will never run
+
+objects:
+  flaky-job: job
+
+steps:
+  - name: intentionally-skipped
+    object: flaky-job
+    actions:
+      - command: Ensure

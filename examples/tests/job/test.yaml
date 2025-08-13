@@ -1,0 +1,5 @@
+name: job
+description: Run a short-lived Kubernetes Job and verify it completes successfully
+namespace: kube2e-job
+ignored:
+  - flaky

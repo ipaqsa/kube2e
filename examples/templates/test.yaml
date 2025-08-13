@@ -1,0 +1,26 @@
+# test.yaml — placed at the root of a test suite directory.
+# Every field except `name` is optional.
+
+# Required. Human-readable identifier; shown in log output.
+name: my-test
+
+# Optional. Longer description for documentation purposes.
+description: ""
+
+# Optional. Default Kubernetes namespace applied to every namespaced object in
+# this suite. Objects that carry their own namespace are unaffected.
+namespace: default
+
+# Optional. Labels merged onto every object applied during this suite.
+# Step-level and case-level labels take precedence over these defaults.
+labels:
+  app.kubernetes.io/managed-by: kube2e
+
+# Optional. Annotations merged onto every object applied during this suite.
+annotations:
+  testing.kube2e.io/suite: my-test
+
+# Optional. Basenames of case files (without .yaml) that should be skipped
+# entirely. Useful for quarantining known-flaky cases without deleting them.
+ignored:
+  - flaky-case

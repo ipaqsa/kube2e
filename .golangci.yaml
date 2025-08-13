@@ -1,0 +1,148 @@
+version: "2" # GolangCI-Lint configuration schema version.
+
+# ------------------------------------------------------------------------------
+# Runner
+# ------------------------------------------------------------------------------
+run:
+  timeout: 5m # Prevent CI jobs from hanging forever.
+  tests: true # Analyze *_test.go files as well.
+
+# ------------------------------------------------------------------------------
+# Formatters
+#
+# These are used by:
+#   golangci-lint fmt
+#
+# They may also participate in formatting validation depending on workflow.
+# ------------------------------------------------------------------------------
+formatters:
+  enable:
+    - gofumpt # Stricter gofmt with additional simplifications.
+    - goimports # Manage imports and remove unused imports.
+    - gci # Deterministic import grouping.
+
+  settings:
+    gofumpt:
+      extra-rules: true # Enable additional formatting and simplification rules.
+
+    goimports:
+      local-prefixes:
+        - kube2e # Treat project imports as local packages.
+
+    gci:
+      custom-order: true # Respect explicitly defined section order.
+
+      sections:
+        - standard # Go standard library.
+        - default # Third-party dependencies.
+        - prefix(kube2e) # Project-specific imports.
+        - localmodule # Current Go module imports.
+
+      no-inline-comments: true # Disallow comments at end of import lines.
+      no-prefix-comments: true # Disallow comments above import groups.
+
+  exclusions:
+    paths:
+      - vendor/ # Skip vendored dependencies.
+
+# ------------------------------------------------------------------------------
+# Linters
+#
+# Start with a curated set that provides good signal-to-noise ratio for
+# production Go services and Kubernetes-style controllers/operators.
+# ------------------------------------------------------------------------------
+linters:
+  enable:
+    - errcheck # Detect ignored errors.
+    - govet # Official Go static analysis.
+    - staticcheck # Advanced correctness checks.
+    - ineffassign # Detect ineffective assignments.
+    - unused # Detect unused code.
+    - misspell # Detect spelling mistakes.
+    - gosec # Security-oriented checks.
+    - goconst # Detect repeated literals suitable for constants.
+    - gocyclo # Cyclomatic complexity checks.
+    - dupl # Detect duplicated code.
+    - unparam # Detect unused function parameters.
+    - unconvert # Detect unnecessary type conversions.
+    - prealloc # Suggest slice preallocation.
+    - copyloopvar # Detect loop variable capture bugs.
+    - dogsled # Detect excessive blank identifiers.
+    - asciicheck # Ensure identifiers use ASCII characters.
+    - errname # Enforce error naming conventions.
+    - gocritic # Collection of code-quality checks.
+    - godot # Ensure doc comments end with periods.
+    - godox # Detect TODO/FIXME comments.
+    - nolintlint # Validate //nolint directives.
+    - revive # Style and maintainability checks.
+    - rowserrcheck # Verify sql.Rows.Err() is checked.
+    - bidichk # Detect bidirectional Unicode control characters.
+    - bodyclose # Ensure HTTP response bodies are closed.
+    - contextcheck # Validate context propagation.
+    - errorlint # Enforce modern error handling patterns.
+    - paralleltest # Encourage t.Parallel() usage.
+    - thelper # Ensure test helpers call t.Helper().
+    - sloglint # Validate slog usage.
+    - perfsprint # Detect inefficient fmt.Sprintf usage.
+    - exhaustive # Require exhaustive enum switches.
+    - testifylint # Validate testify assertions.
+    - wsl_v5 # Enforce whitespace consistency.
+    - musttag # Require tags on marshalable structs.
+
+  disable:
+    - lll # Long lines are allowed.
+
+  settings:
+    gocyclo:
+      min-complexity: 15 # Ignore small functions and focus on real complexity.
+
+    misspell:
+      locale: US # Use US English dictionary.
+
+    errcheck:
+      check-type-assertions: true # Require checking assertion success.
+      check-blank: true # Disallow assigning errors to "_".
+
+    govet:
+      enable:
+        - shadow # Detect variable shadowing.
+
+    staticcheck:
+      checks:
+        - all # Enable all Staticcheck analyzers.
+
+    copyloopvar:
+      check-alias: true # Detect aliasing of loop variables.
+
+    dogsled:
+      max-blank-identifiers: 3 # Allow limited use of "_".
+
+    dupl:
+      threshold: 150 # Reduce noise from small duplicated blocks.
+
+    nolintlint:
+      require-explanation: true # Require reason after //nolint.
+      allow-unused: false # Disallow stale //nolint directives.
+
+    sloglint:
+      no-mixed-args: true # Don't mix positional and key/value args.
+      kv-only: true # Require structured logging.
+      static-msg: true # Require constant log message strings.
+
+    exhaustive:
+      default-signifies-exhaustive: true # default: satisfies exhaustiveness.
+
+    testifylint:
+      enable-all: true # Enable all available testify checks.
+
+  exclusions:
+    paths:
+      - vendor/ # Ignore vendored code.
+
+    rules:
+      # Repeated literals are often clearer in tests than introducing constants.
+      - path: _test\.go
+        linters:
+          - goconst
+          - errcheck
+          - staticcheck

@@ -1,0 +1,126 @@
+# action.yaml — complete reference for every action type.
+# Actions live inside a step's `actions:` list; each entry has a `command` field
+# that selects the action type. All other fields are specific to that command.
+#
+# Fields shared by every action:
+#
+#   command   string    Required. One of: Ensure | Delete | Wait | Patch | Value
+#   delay     duration  Optional. Sleep this long before executing the action.
+#                       Accepts Go/Kubernetes duration strings: 500ms, 5s, 2m.
+
+actions:
+
+  # ── Ensure ─────────────────────────────────────────────────────────────────
+  # Create or update the rendered object using Kubernetes Server-Side Apply.
+  # Requires k8s v1.22+. Field manager is "kube2e".
+  # The object is recorded in the cleanup cache and deleted after the case ends.
+  - command: Ensure
+
+    # Optional. Key-value pairs merged with the object name when rendering the
+    # template. The object name is always injected automatically from the
+    # case-level objects map — never include `name` here.
+    # Supports any type: string, int, bool, list, map.
+    values:
+      replicas: 1
+      image: nginx:1.25-alpine
+
+    # Optional. Sleep before applying.
+    delay: 0s
+
+  # ── Delete ─────────────────────────────────────────────────────────────────
+  # Remove the rendered object from the cluster.
+  # Not-found responses are treated as success (idempotent).
+  - command: Delete
+
+    delay: 0s
+
+  # ── Wait ───────────────────────────────────────────────────────────────────
+  # Poll the object until all JQ conditions evaluate to true, or until the
+  # object is deleted (when deletion: true), or until the timeout expires.
+  - command: Wait
+
+    # Optional. JQ expressions evaluated against the live object.
+    # Every expression must return a boolean. All must pass simultaneously.
+    #
+    # Common patterns:
+    #   Deployment fully ready   : .status.readyReplicas == .spec.replicas
+    #   Pod ready                : any(.status.conditions[]?; .type=="Ready" and .status=="True")
+    #   Job completed            : (.status.succeeded // 0) >= 1
+    #   Custom condition True    : any(.status.conditions[]?; .type=="Available" and .status=="True")
+    conditions:
+      - .status.readyReplicas == .spec.replicas
+
+    # Optional. When true, Wait succeeds once the object no longer exists.
+    # Mutually exclusive with conditions.
+    deletion: false
+
+    # Optional. How often to poll the cluster (default: 2s).
+    interval: 2s
+
+    # Optional. Hard deadline after which Wait returns an error (default: 2m).
+    timeout: 2m
+
+    delay: 0s
+
+  # ── Patch ──────────────────────────────────────────────────────────────────
+  # Apply one or more RFC 6902 JSON Patch operations to the rendered object,
+  # then ensure it on the cluster using Server-Side Apply.
+  - command: Patch
+
+    # Required. List of patch operations.
+    patches:
+
+      # add — insert a value; creates intermediate objects when missing.
+      - op: add
+        path: /metadata/labels/env
+        value: production
+
+      # replace — overwrite an existing value.
+      - op: replace
+        path: /spec/replicas
+        value: 3
+
+      # remove — delete a key. Errors if the path does not exist.
+      - op: remove
+        path: /metadata/annotations/tmp
+
+      # move — remove from `from` and insert at `path`.
+      - op: move
+        from: /data/old-key
+        path: /data/new-key
+
+      # copy — duplicate the value at `from` to `path`.
+      - op: copy
+        from: /data/src
+        path: /data/dst
+
+      # test — assert that `path` equals `value`; aborts the patch if not.
+      - op: test
+        path: /spec/replicas
+        value: 3
+
+    delay: 0s
+
+  # ── Value ──────────────────────────────────────────────────────────────────
+  # Fetch the current state of the object from the cluster, evaluate a JQ
+  # expression against it, and store the string result in a shared key-value
+  # store scoped to the current case.
+  #
+  # Stored values are available in subsequent step templates as:
+  #   {{ .Values.myKey }}
+  - command: Value
+
+    # Required. Key under which the extracted value is stored.
+    valueKey: myKey
+
+    # Required. JQ expression evaluated against the live object.
+    # Must evaluate to a string.
+    #
+    # Examples:
+    #   Service ClusterIP  : .spec.clusterIP
+    #   ConfigMap entry    : .data.version
+    #   Pod node name      : .spec.nodeName
+    #   Image tag          : .spec.containers[0].image | split(":")[1]
+    valuePath: .spec.clusterIP
+
+    delay: 0s

@@ -1,0 +1,3 @@
+name: configmap
+description: Create a ConfigMap, read a value from it, then patch it
+namespace: kube2e-configmap
