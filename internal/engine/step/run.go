@@ -16,6 +16,7 @@ type service struct {
 	logger  *slog.Logger
 }
 
+// run loads a step file and executes each action it defines.
 func Run(ctx context.Context, kube *svckube.Service, manager *template.Manager, stepFile string, logger *slog.Logger) error {
 	if kube == nil {
 		return fmt.Errorf("kube is nil")
@@ -43,6 +44,7 @@ func Run(ctx context.Context, kube *svckube.Service, manager *template.Manager, 
 	return svc.run(ctx, step)
 }
 
+// run executes the step using the underlying services.
 func (s *service) run(ctx context.Context, step *Step) error {
 	if step == nil {
 		return fmt.Errorf("step is nil")

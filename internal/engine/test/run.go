@@ -22,6 +22,7 @@ type service struct {
 	logger      *slog.Logger
 }
 
+// run sets up services and orchestrates test cases found in the directory.
 func Run(ctx context.Context, cfg *rest.Config, testDir, specificCase string, logger *slog.Logger) error {
 	if cfg == nil {
 		return fmt.Errorf("rest config is nil")
@@ -64,6 +65,7 @@ func Run(ctx context.Context, cfg *rest.Config, testDir, specificCase string, lo
 	return svc.run(ctx, test, specificCase)
 }
 
+// run executes the parsed test and optionally filters by a specific case.
 func (s *service) run(ctx context.Context, test *Test, specificCase string) error {
 	if test == nil {
 		return fmt.Errorf("nil test")

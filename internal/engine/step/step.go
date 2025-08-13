@@ -10,6 +10,7 @@ import (
 	"kube2e/internal/engine/action"
 )
 
+// step represents a yaml file that lists actions to run sequentially.
 type Step struct {
 	Path        string          `yaml:"path" json:"path"`
 	Name        string          `yaml:"name" json:"name"`
@@ -17,6 +18,7 @@ type Step struct {
 	Actions     []action.Action `yaml:"actions" json:"actions"`
 }
 
+// parseStepFile reads a step definition from disk and validates its contents.
 func parseStepFile(stepFile string) (*Step, error) {
 	content, err := os.ReadFile(stepFile)
 	if err != nil {
@@ -37,6 +39,7 @@ func parseStepFile(stepFile string) (*Step, error) {
 	return step, nil
 }
 
+// forEach executes the provided function for every action in the step.
 func (s *Step) forEach(f func(act action.Action) error) error {
 	for _, act := range s.Actions {
 		if err := f(act); err != nil {

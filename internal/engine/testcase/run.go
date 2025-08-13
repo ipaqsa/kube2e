@@ -16,6 +16,7 @@ type service struct {
 	logger  *slog.Logger
 }
 
+// run loads a case directory and executes its steps.
 func Run(ctx context.Context, kube *svckube.Service, caseDir string, logger *slog.Logger) error {
 	if kube == nil {
 		return fmt.Errorf("kube service is nil")
@@ -44,6 +45,7 @@ func Run(ctx context.Context, kube *svckube.Service, caseDir string, logger *slo
 	return svc.run(ctx, testCase)
 }
 
+// run iterates through the case steps using the provided services.
 func (s *service) run(ctx context.Context, testCase *Case) error {
 	if testCase == nil {
 		return fmt.Errorf("nil test case")

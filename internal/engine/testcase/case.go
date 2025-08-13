@@ -18,12 +18,14 @@ const (
 	templatesDir = "templates"
 )
 
+// case holds metadata about a single test case directory.
 type Case struct {
 	Path        string `yaml:"path" json:"path"`
 	Name        string `yaml:"name" json:"name"`
 	Description string `yaml:"description" json:"description"`
 }
 
+// parseCaseFile reads a case configuration from disk.
 func parseCaseFile(caseDir string) (*Case, error) {
 	content, err := os.ReadFile(filepath.Join(caseDir, caseFile))
 	if err != nil {
@@ -44,14 +46,17 @@ func parseCaseFile(caseDir string) (*Case, error) {
 	return testcase, nil
 }
 
+// stepsDir returns the directory containing step definitions for the case.
 func (c *Case) StepsDir() string {
 	return filepath.Join(c.Path, stepsDir)
 }
 
+// templatesDir returns the directory containing templates used by steps.
 func (c *Case) TemplatesDir() string {
 	return filepath.Join(c.Path, templatesDir)
 }
 
+// forEach iterates over step files in order and calls the provided function.
 func (c *Case) forEach(f func(stepFile string) error) error {
 	steps, err := os.ReadDir(c.StepsDir())
 	if err != nil {

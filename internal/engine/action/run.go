@@ -28,6 +28,8 @@ type service struct {
 	logger  *slog.Logger
 }
 
+// run executes the provided action against the kubernetes cluster using the
+// given services and template manager.
 func Run(ctx context.Context, kube *svckube.Service, manager *template.Manager, action Action, logger *slog.Logger) error {
 	svc := new(service)
 
@@ -54,6 +56,7 @@ func (s *service) run(ctx context.Context, action Action) error {
 	return nil
 }
 
+// handleEnsure renders the object template and ensures its presence on the cluster.
 func (s *service) handleEnsure(ctx context.Context, obj Object) error {
 	rendered, err := s.manager.Render(obj.Template, obj.Values)
 	if err != nil {
@@ -65,6 +68,7 @@ func (s *service) handleEnsure(ctx context.Context, obj Object) error {
 	return s.kube.Ensure(ctx, rendered)
 }
 
+// handleDelete renders the object template and deletes it from the cluster.
 func (s *service) handleDelete(ctx context.Context, obj Object) error {
 	rendered, err := s.manager.Render(obj.Template, obj.Values)
 	if err != nil {
@@ -76,6 +80,7 @@ func (s *service) handleDelete(ctx context.Context, obj Object) error {
 	return s.kube.Delete(ctx, rendered)
 }
 
+// handleWait renders the object template and waits for the specified condition.
 func (s *service) handleWait(ctx context.Context, action Action) error {
 	rendered, err := s.manager.Render(action.Object.Template, action.Object.Values)
 	if err != nil {
@@ -94,6 +99,7 @@ func (s *service) handleWait(ctx context.Context, action Action) error {
 	return s.kube.Wait(ctx, rendered, opts...)
 }
 
+// handlePatch renders the object template and applies json patches before ensuring it.
 func (s *service) handlePatch(ctx context.Context, action Action) error {
 	rendered, err := s.manager.Render(action.Object.Template, action.Object.Values)
 	if err != nil {

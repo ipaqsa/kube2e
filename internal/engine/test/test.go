@@ -16,6 +16,7 @@ const (
 	casesDir = "cases"
 )
 
+// test groups multiple cases and optional cluster resources into one scenario.
 type Test struct {
 	Path        string            `yaml:"path" json:"path"`
 	Name        string            `yaml:"name" json:"name"`
@@ -26,6 +27,7 @@ type Test struct {
 	Annotations map[string]string `yaml:"annotations" json:"annotations"`
 }
 
+// parseTestFile loads the test descriptor from the provided directory.
 func parseTestFile(testDir string) (*Test, error) {
 	content, err := os.ReadFile(filepath.Join(testDir, testFile))
 	if err != nil {
@@ -50,14 +52,17 @@ func parseTestFile(testDir string) (*Test, error) {
 	return test, nil
 }
 
+// crdsDir returns the directory containing custom resource definitions for the test.
 func (t *Test) CRDsDir() string {
 	return filepath.Join(t.Path, crdsDir)
 }
 
+// casesDir returns the directory containing individual test cases.
 func (t *Test) CasesDir() string {
 	return filepath.Join(t.Path, casesDir)
 }
 
+// forEach iterates over case directories and invokes the provided function.
 func (t *Test) forEach(f func(caseDir string) error) error {
 	cases, err := os.ReadDir(t.CasesDir())
 	if err != nil {
