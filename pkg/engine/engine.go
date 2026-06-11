@@ -13,7 +13,6 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/ipaqsa/kube2e/internal/engine/test"
-	"github.com/ipaqsa/kube2e/internal/image"
 )
 
 // Config holds the top-level inputs needed to discover and run a suite of tests.
@@ -26,41 +25,12 @@ type Config struct {
 	// Tests is an optional allowlist of test directory names. When empty all
 	// test directories under WorkDir are executed.
 	Tests []string
-
-	// Remote is the image with tests to run.
-	Remote string
-	// RemoteUser is the user for the remote registry.
-	RemoteUser string
-	// RemotePassword is the password for the remote registry.
-	RemotePassword string
 }
 
 // RunTests discovers test directories under cfg.WorkDir and runs each one in
 // order. When cfg.Tests is non-empty only the listed directories are executed.
 // Hidden directories (names starting with ".") are always skipped.
 func RunTests(ctx context.Context, cfg *Config, logger *slog.Logger) error {
-	if cfg.Remote != "" {
-		logger.Info("pull tests image", "image", cfg.Remote)
-
-		remote := image.Remote{
-			Ref:      cfg.Remote,
-			Username: cfg.RemoteUser,
-			Password: cfg.RemotePassword,
-		}
-
-		tester := func(dir string) error {
-			testsDir := filepath.Join(dir, cfg.WorkDir)
-
-			return runTest(ctx, cfg, testsDir, logger)
-		}
-
-		if err := image.Traverse(ctx, remote, tester); err != nil {
-			return err
-		}
-
-		return nil
-	}
-
 	return runTest(ctx, cfg, cfg.WorkDir, logger)
 }
 

@@ -27,10 +27,17 @@ type Case struct {
 	// Steps reference an entry by name; Ensure is the only action that uses Values.
 	Objects map[string]string `yaml:"objects" json:"objects"`
 
+	Hooks Hooks        `yaml:"hooks" json:"hooks"`
 	Steps []*step.Step `yaml:"steps" json:"steps"`
 
 	Labels      map[string]string `yaml:"labels" json:"labels"`
 	Annotations map[string]string `yaml:"annotations" json:"annotations"`
+}
+
+// Hooks holds case-level steps that run before and after every case step.
+type Hooks struct {
+	Before []*step.Step `yaml:"before" json:"before"`
+	After  []*step.Step `yaml:"after" json:"after"`
 }
 
 // parseCaseFile reads a case configuration from disk.

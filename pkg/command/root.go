@@ -10,7 +10,8 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/ipaqsa/kube2e/internal/version"
-	cmdtest "github.com/ipaqsa/kube2e/pkg/command/test"
+	cmdrun "github.com/ipaqsa/kube2e/pkg/command/run"
+	cmdtests "github.com/ipaqsa/kube2e/pkg/command/tests"
 	cmdversion "github.com/ipaqsa/kube2e/pkg/command/version"
 )
 
@@ -47,7 +48,8 @@ CRDs must be provisioned in the cluster before running tests.`,
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	viper.AutomaticEnv()
 
-	cmd.AddCommand(cmdtest.NewTestCommand())
+	cmd.AddCommand(cmdrun.NewRunCommand())
+	cmd.AddCommand(cmdtests.NewTestsCommand())
 	cmd.AddCommand(cmdversion.NewVersionCommand())
 
 	return cmd

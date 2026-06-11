@@ -145,9 +145,7 @@ func WithEnsureLabels(labels map[string]string) EnsureOptionFunc {
 			return
 		}
 
-		for k, v := range labels {
-			o.Labels[k] = v
-		}
+		maps.Copy(o.Labels, labels)
 	}
 }
 
@@ -158,9 +156,7 @@ func WithEnsureAnnotations(annotations map[string]string) EnsureOptionFunc {
 			return
 		}
 
-		for k, v := range annotations {
-			o.Annotations[k] = v
-		}
+		maps.Copy(o.Annotations, annotations)
 	}
 }
 

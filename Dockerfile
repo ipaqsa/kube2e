@@ -16,7 +16,7 @@ COPY . .
 # Build with version info and target platform
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
-    -ldflags="-X kube2e/internal/version.Version=${VERSION} -s -w" \
+    -ldflags="-X github.com/ipaqsa/kube2e/internal/version.Version=${VERSION} -s -w" \
     -o app ./cmd/kube2e
 
 # Runtime stage (scratch)

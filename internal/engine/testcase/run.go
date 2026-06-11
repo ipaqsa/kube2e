@@ -3,6 +3,7 @@ package testcase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -86,29 +87,71 @@ func (s *service) run(ctx context.Context, testCase *Case) error {
 	}
 
 	for _, caseStep := range testCase.Steps {
-		s.logger.Info("run step", "name", caseStep.Name)
-
-		conf := &step.Config{
-			Kube:     s.kube,
-			Template: s.template,
-
-			Objects: testCase.Objects,
-
-			Step: caseStep,
-
-			Labels:      s.labels,
-			Annotations: s.annotations,
-			Values:      s.values,
-
-			Logger: s.logger,
-		}
-
-		if err := step.Run(ctx, conf); err != nil {
-			return fmt.Errorf("run the step '%s': %w", caseStep.Name, err)
+		if err := s.runStepWithHooks(ctx, testCase, caseStep); err != nil {
+			return err
 		}
 	}
 
 	s.logger.Info("clear applied resources")
 
 	return s.kube.ClearApplied(ctx)
+}
+
+// runStepWithHooks executes caseStep with case-level before and after hooks.
+func (s *service) runStepWithHooks(ctx context.Context, testCase *Case, caseStep *step.Step) error {
+	var result error
+
+	if err := s.runSteps(ctx, testCase, testCase.Hooks.Before, "before hook"); err != nil {
+		result = errors.Join(result, err)
+	} else if err = s.runStep(ctx, testCase, caseStep, "step"); err != nil {
+		result = errors.Join(result, err)
+	}
+
+	if err := s.runSteps(ctx, testCase, testCase.Hooks.After, "after hook"); err != nil {
+		result = errors.Join(result, err)
+	}
+
+	return result
+}
+
+// runSteps executes steps in order for the given phase.
+func (s *service) runSteps(ctx context.Context, testCase *Case, steps []*step.Step, phase string) error {
+	for _, st := range steps {
+		if err := s.runStep(ctx, testCase, st, phase); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// runStep executes one step using the test case services.
+func (s *service) runStep(ctx context.Context, testCase *Case, st *step.Step, phase string) error {
+	name := ""
+	if st != nil {
+		name = st.Name
+	}
+
+	s.logger.Info("run step", "phase", phase, "name", name)
+
+	conf := &step.Config{
+		Kube:     s.kube,
+		Template: s.template,
+
+		Objects: testCase.Objects,
+
+		Step: st,
+
+		Labels:      s.labels,
+		Annotations: s.annotations,
+		Values:      s.values,
+
+		Logger: s.logger,
+	}
+
+	if err := step.Run(ctx, conf); err != nil {
+		return fmt.Errorf("run the %s '%s': %w", phase, name, err)
+	}
+
+	return nil
 }

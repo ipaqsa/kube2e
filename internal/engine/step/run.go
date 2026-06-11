@@ -44,13 +44,17 @@ type Config struct {
 
 // Run executes every action in the step against the cluster.
 func Run(ctx context.Context, conf *Config) error {
+	if conf.Step == nil {
+		return interrors.ErrNilStep
+	}
+
 	svc := new(service)
 
 	svc.kube = conf.Kube
 	svc.template = conf.Template
 
-	svc.labels = conf.Labels
-	svc.annotations = conf.Annotations
+	svc.labels = maps.Clone(conf.Labels)
+	svc.annotations = maps.Clone(conf.Annotations)
 	svc.values = conf.Values
 
 	if len(svc.labels) == 0 {

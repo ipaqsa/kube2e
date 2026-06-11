@@ -30,6 +30,27 @@ annotations:
 objects:
   my-resource: my-template
 
+# Optional. Case-level hooks executed around every step. Hook entries use the
+# same schema as normal steps and can reference any object in the objects map.
+hooks:
+  # Optional. Steps executed before each item in `steps`.
+  before:
+    - name: before-each-step
+      object: my-resource
+      actions:
+        - command: Delete
+
+  # Optional. Steps executed after each item in `steps`. After hooks run even
+  # when a before hook or the main step fails, which makes them useful for
+  # cleanup and diagnostics.
+  after:
+    - name: after-each-step
+      object: my-resource
+      optional: true
+      actions:
+        - command: Wait
+          deletion: true
+
 # Required. Ordered list of steps to execute sequentially.
 steps:
   # ── Step ──────────────────────────────────────────────────────────────────

@@ -56,8 +56,10 @@ go build -o bin/kube2e ./cmd/kube2e
 
 ## Usage
 
+### Run tests
+
 ```bash
-kube2e test <dir> [flags]
+kube2e run <dir> [flags]
 ```
 
 | Flag                | Env var                  | Default | Description                                        |
@@ -71,22 +73,22 @@ kube2e test <dir> [flags]
 
 ```bash
 # Run all suites under ./examples/tests
-kube2e test ./examples/tests
+kube2e run ./examples/tests
 
 # Run only the nginx and job suites
-kube2e test ./examples/tests --tests nginx,job
+kube2e run ./examples/tests --tests nginx,job
 
 # Run with warning messages visible
-kube2e test ./examples/tests -v
+kube2e run ./examples/tests -v
 
 # Run test suites packaged in a container image
-kube2e test ./tests --remote ghcr.io/example/kube2e-tests:v0.1.0
+kube2e run ./tests --remote ghcr.io/example/kube2e-tests:v0.1.0
 
 # Run test suites from the root of a container image
-kube2e test . --remote ghcr.io/example/kube2e-tests:v0.1.0
+kube2e run . --remote ghcr.io/example/kube2e-tests:v0.1.0
 
 # Run a specific suite against a staging cluster
-kube2e test ./examples/tests --tests nginx -v --kubeconfig ~/.kube/staging.yaml
+kube2e run ./examples/tests --tests nginx -v --kubeconfig ~/.kube/staging.yaml
 ```
 
 `<dir>` is required in both modes. For local runs it points at a filesystem
@@ -96,6 +98,38 @@ that extracted filesystem. Use `.` to discover suites from the image root.
 Private registries can be accessed with `--remote-user` and `--remote-password`;
 when the username is omitted, kube2e uses the default Docker credential
 keychain.
+
+### Build a tests image
+
+```bash
+kube2e tests build <dir> --remote <image> [flags]
+```
+
+| Flag                | Env var                              | Default | Description                              |
+|---------------------|--------------------------------------|---------|------------------------------------------|
+| `--remote`          | `KUBE2E_TESTS_BUILD_REMOTE`          | —       | Image reference to push                  |
+| `--remote-user`     | `KUBE2E_TESTS_BUILD_REMOTE_USER`     | —       | Registry username for `--remote`         |
+| `--remote-password` | `KUBE2E_TESTS_BUILD_REMOTE_PASSWORD` | —       | Registry password for `--remote`         |
+| `-v, --verbose`     | `KUBE2E_VERBOSE`                     | false   | Show `warn`-level messages               |
+
+```bash
+# Package all test suites under ./examples/tests and push them
+kube2e tests build ./examples/tests --remote ghcr.io/example/kube2e-tests:v0.1.0
+
+# Push with explicit registry credentials
+kube2e tests build ./examples/tests \
+  --remote ghcr.io/example/kube2e-tests:v0.1.0 \
+  --remote-user "$USER" \
+  --remote-password "$TOKEN"
+```
+
+Only immediate child directories that contain `test.yaml` are included in the
+image. The suites are written at the image root, so an image built from
+`./examples/tests` can be run with:
+
+```bash
+kube2e run . --remote ghcr.io/example/kube2e-tests:v0.1.0
+```
 
 ## Directory structure
 
@@ -140,6 +174,11 @@ annotations:
   <key>: <value>
 objects:                 # resource name → template base-filename (without .yaml)
   <name>: <template>    # the key is injected as the Kubernetes object name
+hooks:
+  before:
+    - <step>             # executed before each item in steps
+  after:
+    - <step>             # executed after each item in steps
 steps:
   - <step>
 ```
@@ -147,6 +186,10 @@ steps:
 The `objects` map is the single place where you bind a resource name to its
 template. Steps reference entries by key; the key is used as the Kubernetes
 `metadata.name` in every render — you never put `name` in step values.
+
+`hooks.before` and `hooks.after` are optional case-level step lists. They use
+the same schema as normal steps and run before or after every step in `steps`.
+After hooks run even when a before hook or the main step fails.
 
 ### Step
 
