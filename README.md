@@ -16,7 +16,9 @@ manage CRD lifecycle.
 - Local or remote suite sources
 - Declarative test, case, step, and action files
 - Go templates with Sprig helpers
-- Kubernetes actions for apply, delete, wait, patch, and value extraction
+- Kubernetes actions: ensure, patch, wait, assert, delete
+- Tag-based filtering with `--tags`
+- Parallel suite execution with `-n`
 
 ## Install
 
@@ -65,18 +67,23 @@ kube2e run <dir> [flags]
 | Flag                | Env var                  | Default | Description                                        |
 |---------------------|--------------------------|---------|----------------------------------------------------|
 | `--kubeconfig`      | `KUBE2E_KUBECONFIG`      | —       | Kubeconfig path; falls back to `$KUBECONFIG` then `~/.kube/config` |
-| `--tests`           | `KUBE2E_TESTS`           | all     | Comma-separated suite names to run                 |
+| `--tags`            | `KUBE2E_TAGS`            | all     | Comma-separated tags; only matching suites/cases run |
+| `-n, --parallel`    | `KUBE2E_PARALLEL`        | 1       | Number of test suites to run concurrently          |
 | `--remote`          | `KUBE2E_REMOTE`          | —       | Container image that contains test suites          |
 | `--remote-user`     | `KUBE2E_REMOTE_USER`     | —       | Registry username for `--remote`                   |
 | `--remote-password` | `KUBE2E_REMOTE_PASSWORD` | —       | Registry password for `--remote`                   |
+| `--dry-run`         | `KUBE2E_DRY_RUN`         | false   | Parse and validate tests without applying any resources |
 | `-v, --verbose`     | `KUBE2E_VERBOSE`         | false   | Show `warn`-level messages (default: `info`+`error` only) |
 
 ```bash
 # Run all suites under ./examples/tests
 kube2e run ./examples/tests
 
-# Run only the nginx and job suites
-kube2e run ./examples/tests --tests nginx,job
+# Run only suites and cases tagged "smoke" or "aws"
+kube2e run ./examples/tests --tags smoke,aws
+
+# Run 4 test suites in parallel
+kube2e run ./examples/tests -n 4
 
 # Run with warning messages visible
 kube2e run ./examples/tests -v
@@ -84,12 +91,21 @@ kube2e run ./examples/tests -v
 # Run test suites packaged in a container image
 kube2e run ./tests --remote ghcr.io/example/kube2e-tests:v0.1.0
 
-# Run test suites from the root of a container image
-kube2e run . --remote ghcr.io/example/kube2e-tests:v0.1.0
+# Run tagged tests against a staging cluster
+kube2e run ./examples/tests --tags smoke --kubeconfig ~/.kube/staging.yaml
 
-# Run a specific suite against a staging cluster
-kube2e run ./examples/tests --tests nginx -v --kubeconfig ~/.kube/staging.yaml
+# Validate test files without touching the cluster
+kube2e run ./examples/tests --dry-run
 ```
+
+**Tag filtering rules:**
+
+1. If `--tags` is not set, everything runs.
+2. If `--tags a,b` is set:
+   - A suite is **skipped entirely** when its `tags:` is non-empty and contains neither `a` nor `b`.
+   - A suite with no `tags:` (or with a matching tag) has its cases checked individually.
+   - A case runs only if it has at least one matching tag.
+   - **Exception**: when the suite itself has a matching tag, *all* its cases run regardless of case-level tags.
 
 `<dir>` is required in both modes. For local runs it points at a filesystem
 directory. When `--remote` is set, kube2e pulls the image, extracts its
@@ -136,7 +152,7 @@ kube2e run . --remote ghcr.io/example/kube2e-tests:v0.1.0
 ```
 <work-dir>/
 └── <suite-name>/
-    ├── test.yaml        # Suite descriptor (name, namespace, labels, ignored cases)
+    ├── test.yaml        # Suite descriptor (name, namespace)
     ├── templates/       # Go templates rendered into Kubernetes objects
     │   └── *.yaml
     └── cases/           # One YAML file per test case
@@ -155,11 +171,7 @@ finishes.
 name: <string>           # required — shown in log output
 description: <string>
 namespace: <string>      # default namespace for all objects in this suite
-labels:
-  <key>: <value>         # merged onto every applied object
-annotations:
-  <key>: <value>
-ignored:                 # case basenames (without .yaml) to skip
+tags:                    # optional — filter with --tags; matching suite runs all its cases
   - <string>
 ```
 
@@ -168,10 +180,8 @@ ignored:                 # case basenames (without .yaml) to skip
 ```yaml
 name: <string>           # required
 description: <string>
-labels:
-  <key>: <value>         # additive over test-level labels
-annotations:
-  <key>: <value>
+tags:                    # optional — filter with --tags when parent suite didn't already match
+  - <string>
 objects:                 # resource name → template base-filename (without .yaml)
   <name>: <template>    # the key is injected as the Kubernetes object name
 hooks:
@@ -193,59 +203,97 @@ After hooks run even when a before hook or the main step fails.
 
 ### Step
 
-Each step references one object from the case `objects` map and runs one or
-more actions against it.
+Each step runs one or more typed actions. Set any combination; absent fields
+are skipped. Actions execute in a fixed order: **ensure → patch → wait → assert → delete**,
+and the first failure aborts the step (unless `optional: true`).
 
 ```yaml
 name: <string>           # required — shown in log output
 description: <string>
 optional: <bool>         # when true, failures are warned and skipped
-labels:
-  <key>: <value>         # applied to the object for this step only
-annotations:
-  <key>: <value>
-object: <string>         # key in the case objects map (= Kubernetes object name)
-actions:
-  - <action>
+ensure:                  # optional — create or update the object
+  object: <string>       # required (flat, no target nesting)
+  ...
+patch:                   # optional — apply JSON patches then re-ensure
+  target:
+    object: <string>     # required
+  ...
+wait:                    # optional — poll until conditions pass
+  target:
+    object: <string>     # required
+  ...
+assert:                  # optional — one-shot condition check
+  target:
+    object: <string>     # required
+  ...
+delete:                  # optional — remove the object
+  target:
+    object: <string>     # required
+  ...
+```
+
+Every action also accepts an optional `delay: <duration>` field that sleeps
+before execution. Every action except `wait` accepts an optional `retry` block:
+
+```yaml
+retry:
+  attempts: <int>         # total executions (1 = no retry)
+  backoff: <duration>     # sleep between attempts (e.g. 5s)
 ```
 
 ### Actions
 
-All actions operate on the object identified by the step's `object` key.
-Every action accepts an optional `delay: <duration>` field that sleeps before
-execution. Only `Ensure` uses the step's `values` to build the full rendered
-spec; the other actions use the object's name and GVK to operate on live
-cluster state.
-
-#### `Ensure`
+#### `ensure`
 
 Create or update the object using Server-Side Apply (field manager `kube2e`).
 Requires Kubernetes v1.22+. The object is cached for automatic cleanup.
 
 ```yaml
-- command: Ensure
+ensure:
+  object: <string>     # required — key in the case objects map (flat, no target)
   values:              # template render inputs; name is injected automatically
     <key>: <value>
+  retry:
+    attempts: <int>
+    backoff: <duration>
 ```
 
-#### `Delete`
+#### `patch`
 
-Remove the object. Not-found responses are treated as success.
+Apply RFC 6902 JSON Patch operations to the rendered object, then re-ensure it.
 
 ```yaml
-- command: Delete
+patch:
+  target:
+    object: <string>   # required — key in the case objects map
+  patches:
+    - op: add            # add | replace | remove | move | copy | test
+      path: /metadata/labels/env
+      value: production
+    - op: replace
+      path: /spec/replicas
+      value: 3
+    - op: remove
+      path: /metadata/annotations/tmp
+    - op: move
+      from: /data/src
+      path: /data/dst
+  retry:
+    attempts: <int>
+    backoff: <duration>
 ```
 
-#### `Wait`
+#### `wait`
 
-Poll the live object until all JQ conditions return `true`, or until the object
-disappears (`deletion: true`), or until the timeout expires.
+Poll the live object until all JQ conditions return `true`, or until the
+timeout expires. Does not support retry (use `assert` for one-shot checks).
 
 ```yaml
-- command: Wait
+wait:
+  target:
+    object: <string>   # required — key in the case objects map
   conditions:
     - <jq expression>    # must evaluate to boolean — all must pass
-  deletion: <bool>       # succeed when object no longer exists
   interval: <duration>   # poll interval  (default: 2s)
   timeout: <duration>    # hard deadline  (default: 2m)
 ```
@@ -266,44 +314,37 @@ disappears (`deletion: true`), or until the timeout expires.
 - any(.status.conditions[]?; .type=="Available" and .status=="True")
 ```
 
-#### `Patch`
+#### `assert`
 
-Apply RFC 6902 JSON Patch operations to the rendered object, then re-ensure it.
+Fetch the object once and check that all JQ conditions are true. Unlike `wait`,
+there is no poll loop — use `retry` for repeated checks with backoff.
 
 ```yaml
-- command: Patch
-  patches:
-    - op: add            # add | replace | remove | move | copy | test
-      path: /metadata/labels/env
-      value: production
-    - op: replace
-      path: /spec/replicas
-      value: 3
-    - op: remove
-      path: /metadata/annotations/tmp
-    - op: move
-      from: /data/src
-      path: /data/dst
+assert:
+  target:
+    object: <string>   # required — key in the case objects map
+  conditions:
+    - <jq expression>
+  retry:
+    attempts: <int>
+    backoff: <duration>
 ```
 
-#### `Value`
+#### `delete`
 
-Fetch the current object from the cluster, evaluate a JQ expression against it,
-and store the string result for use in subsequent step templates.
-
-```yaml
-- command: Value
-  valueKey: <string>     # key to store the result under
-  valuePath: <jq>        # must evaluate to a string
-```
-
-Stored values are available in templates as `{{ .Values.<key> }}`.
+Remove the object. Not-found responses are treated as success. Set `wait: true`
+to block until the object disappears from the cluster.
 
 ```yaml
-# Examples
-valuePath: .spec.clusterIP
-valuePath: .data.version
-valuePath: .spec.containers[0].image | split(":")[1]
+delete:
+  target:
+    object: <string>   # required — key in the case objects map
+  wait: <bool>           # block until object is gone (default: false)
+  interval: <duration>   # poll interval for the post-delete wait  (default: 2s)
+  timeout: <duration>    # hard deadline for the post-delete wait  (default: 2m)
+  retry:
+    attempts: <int>
+    backoff: <duration>
 ```
 
 ### Template system
@@ -345,8 +386,8 @@ See [`examples/tests/`](examples/tests/) for three working suites:
 | Suite        | Demonstrates                                  |
 |--------------|-----------------------------------------------|
 | `nginx`      | Ensure + Wait with readiness condition         |
-| `configmap`  | Ensure + Value extraction + Patch              |
-| `job`        | Ensure + Wait for completion + ignored case    |
+| `configmap`  | Ensure + Patch                                 |
+| `job`        | Ensure + Wait for completion                   |
 
 Reference templates with every field documented are in
 [`examples/templates/`](examples/templates/).

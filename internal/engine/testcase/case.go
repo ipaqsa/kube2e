@@ -22,6 +22,11 @@ type Case struct {
 	Name        string `yaml:"name" json:"name"`
 	Description string `yaml:"description" json:"description"`
 
+	// Tags are arbitrary labels used for filtering via --tags. When --tags is
+	// given and the parent test has no matching tags, the case is skipped unless
+	// at least one of its tags matches the requested tags.
+	Tags []string `yaml:"tags" json:"tags"`
+
 	// Objects maps a resource name to its template base-filename (without .yaml).
 	// The key becomes the Kubernetes object name injected into every render.
 	// Steps reference an entry by name; Ensure is the only action that uses Values.
@@ -29,15 +34,12 @@ type Case struct {
 
 	Hooks Hooks        `yaml:"hooks" json:"hooks"`
 	Steps []*step.Step `yaml:"steps" json:"steps"`
-
-	Labels      map[string]string `yaml:"labels" json:"labels"`
-	Annotations map[string]string `yaml:"annotations" json:"annotations"`
 }
 
 // Hooks holds case-level steps that run before and after every case step.
 type Hooks struct {
-	Before []*step.Step `yaml:"before" json:"before"`
-	After  []*step.Step `yaml:"after" json:"after"`
+	BeforeEach []*step.Step `yaml:"beforeEach" json:"beforeEach"`
+	AfterEach  []*step.Step `yaml:"afterEach" json:"afterEach"`
 }
 
 // parseCaseFile reads a case configuration from disk.
@@ -55,12 +57,6 @@ func parseCaseFile(path string) (*Case, error) {
 	if testcase.Name == "" {
 		return nil, interrors.ErrCaseNoName
 	}
-
-	if len(testcase.Annotations) == 0 {
-		testcase.Annotations = make(map[string]string)
-	}
-
-	testcase.Annotations[caseAnnotation] = testcase.Name
 
 	testcase.Path = path
 

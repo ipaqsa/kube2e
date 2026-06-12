@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"maps"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"github.com/ipaqsa/kube2e/internal/engine/action"
 	interrors "github.com/ipaqsa/kube2e/internal/errors"
 	svckube "github.com/ipaqsa/kube2e/internal/kube"
@@ -14,14 +16,11 @@ import (
 )
 
 type service struct {
-	kube     *svckube.Service
-	template *template.Manager
-
-	labels      map[string]string
+	kube        *svckube.Service
+	template    *template.Manager
 	annotations map[string]string
 	values      *safe.Store[string]
-
-	logger *slog.Logger
+	logger      *slog.Logger
 }
 
 // Config carries everything a step runner needs, including the case-level
@@ -35,14 +34,14 @@ type Config struct {
 
 	Step *Step
 
-	Labels      map[string]string
 	Annotations map[string]string
 	Values      *safe.Store[string]
 
 	Logger *slog.Logger
 }
 
-// Run executes every action in the step against the cluster.
+// Run executes every configured action in the step against the cluster.
+// Actions execute in the order: Ensure → Patch → Wait → Assert → Delete.
 func Run(ctx context.Context, conf *Config) error {
 	if conf.Step == nil {
 		return interrors.ErrNilStep
@@ -52,22 +51,12 @@ func Run(ctx context.Context, conf *Config) error {
 
 	svc.kube = conf.Kube
 	svc.template = conf.Template
-
-	svc.labels = maps.Clone(conf.Labels)
-	svc.annotations = maps.Clone(conf.Annotations)
 	svc.values = conf.Values
 
-	if len(svc.labels) == 0 {
-		svc.labels = make(map[string]string)
-	}
-
-	maps.Copy(svc.labels, conf.Step.Labels)
-
+	svc.annotations = maps.Clone(conf.Annotations)
 	if len(svc.annotations) == 0 {
 		svc.annotations = make(map[string]string)
 	}
-
-	maps.Copy(svc.annotations, conf.Step.Annotations)
 
 	svc.annotations[stepAnnotation] = conf.Step.Name
 
@@ -76,52 +65,37 @@ func Run(ctx context.Context, conf *Config) error {
 	return svc.run(ctx, conf.Step, conf.Objects)
 }
 
-// run renders the step's object and dispatches every action.
 func (s *service) run(ctx context.Context, st *Step, objects map[string]string) error {
 	if st == nil {
 		return interrors.ErrNilStep
 	}
 
-	templateName, ok := objects[st.Object]
-	if !ok {
-		return fmt.Errorf("object %q: %w", st.Object, interrors.ErrObjectNotInMap)
+	var err error
+
+	if st.Ensure != nil {
+		err = s.runEnsure(ctx, st, objects)
 	}
 
-	err := st.forEach(func(act action.Action) error {
-		s.logger.Info("run action", "name", act.String(st.Object))
+	if err == nil && st.Patch != nil {
+		err = s.runPatch(ctx, st, objects)
+	}
 
-		// Name is always injected from the objects map key.
-		// Ensure actions carry their own Values for the full spec render;
-		// all other actions render with name-only and use only GVK + name.
-		// Stored case values (from Value actions) are exposed as .Values.<key>.
-		renderValues := map[string]any{"name": st.Object}
-		maps.Copy(renderValues, act.Values)
+	if err == nil && st.Wait != nil {
+		err = s.runWait(ctx, st, objects)
+	}
 
-		renderValues["Values"] = maps.Collect(s.values.Iter())
+	if err == nil && st.Assert != nil {
+		err = s.runAssert(ctx, st, objects)
+	}
 
-		rendered, err := s.template.Render(templateName, renderValues)
-		if err != nil {
-			return fmt.Errorf("render object %q from template %q: %w", st.Object, templateName, err)
-		}
+	if err == nil && st.Delete != nil {
+		err = s.runDelete(ctx, st, objects)
+	}
 
-		conf := &action.Config{
-			Kube: s.kube,
-
-			Action: act,
-			Object: rendered,
-
-			Labels:      s.labels,
-			Annotations: s.annotations,
-			Values:      s.values,
-
-			Logger: s.logger,
-		}
-
-		return action.Run(ctx, conf)
-	})
 	if err != nil {
 		if st.Optional {
 			s.logger.Warn("optional step failed", "error", err)
+
 			return nil
 		}
 
@@ -129,4 +103,95 @@ func (s *service) run(ctx context.Context, st *Step, objects map[string]string) 
 	}
 
 	return nil
+}
+
+// actionConf builds the base action.Config for a rendered object.
+func (s *service) actionConf(obj client.Object) *action.Config {
+	return &action.Config{
+		Kube:        s.kube,
+		Object:      obj,
+		Annotations: s.annotations,
+		Logger:      s.logger,
+	}
+}
+
+// render looks up the template for name and executes it with the merged values.
+func (s *service) render(objects map[string]string, name string, extra map[string]any) (client.Object, error) {
+	tmplName, ok := objects[name]
+	if !ok {
+		return nil, fmt.Errorf("object %q: %w", name, interrors.ErrObjectNotInMap)
+	}
+
+	values := map[string]any{"name": name}
+
+	maps.Copy(values, extra)
+
+	values["Values"] = maps.Collect(s.values.Iter())
+
+	return s.template.Render(tmplName, values)
+}
+
+func (s *service) runEnsure(ctx context.Context, st *Step, objects map[string]string) error {
+	s.logger.Info("run action", "action", "ensure")
+
+	name := st.Ensure.Object
+
+	obj, err := s.render(objects, name, st.Ensure.Values)
+	if err != nil {
+		return fmt.Errorf("render object %q for ensure: %w", name, err)
+	}
+
+	return action.RunEnsure(ctx, s.actionConf(obj), st.Ensure)
+}
+
+func (s *service) runPatch(ctx context.Context, st *Step, objects map[string]string) error {
+	s.logger.Info("run action", "action", "patch")
+
+	name := st.Patch.Target.Object
+
+	obj, err := s.render(objects, name, nil)
+	if err != nil {
+		return fmt.Errorf("render object %q for patch: %w", name, err)
+	}
+
+	return action.RunPatch(ctx, s.actionConf(obj), st.Patch)
+}
+
+func (s *service) runWait(ctx context.Context, st *Step, objects map[string]string) error {
+	s.logger.Info("run action", "action", "wait")
+
+	name := st.Wait.Target.Object
+
+	obj, err := s.render(objects, name, nil)
+	if err != nil {
+		return fmt.Errorf("render object %q for wait: %w", name, err)
+	}
+
+	return action.RunWait(ctx, s.actionConf(obj), st.Wait)
+}
+
+func (s *service) runAssert(ctx context.Context, st *Step, objects map[string]string) error {
+	s.logger.Info("run action", "action", "assert")
+
+	name := st.Assert.Target.Object
+
+	obj, err := s.render(objects, name, nil)
+	if err != nil {
+		return fmt.Errorf("render object %q for assert: %w", name, err)
+	}
+
+	return action.RunAssert(ctx, s.actionConf(obj), st.Assert)
+}
+
+func (s *service) runDelete(ctx context.Context, st *Step, objects map[string]string) error {
+	s.logger.Info("run action", "action", "delete")
+
+	name := st.Delete.Target.Object
+
+	obj, err := s.render(objects, name, nil)
+	if err != nil {
+		return fmt.Errorf("render object %q for delete: %w", name, err)
+	}
+
+	return action.RunDelete(ctx, s.actionConf(obj), st.Delete)
 }

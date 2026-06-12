@@ -1,5 +1,3 @@
 name: nginx
 description: Deploy nginx and verify the rollout completes
 namespace: kube2e-nginx
-labels:
-  example: nginx

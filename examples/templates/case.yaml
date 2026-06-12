@@ -7,14 +7,12 @@ name: my-case
 # Optional. Longer description for documentation purposes.
 description: ""
 
-# Optional. Labels merged onto every object applied in this case, additive over
-# the test-level labels defined in test.yaml.
-labels:
-  key: value
-
-# Optional. Annotations merged onto every object applied in this case.
-annotations:
-  key: value
+# Optional. Tags used to select this case via --tags.
+# When --tags is given and the parent test did not already match, the case is
+# skipped unless at least one of its tags matches the requested tags.
+tags:
+  - smoke
+  - aws
 
 # Optional. Case-level object registry: maps a resource name to the template
 # base-filename (without .yaml) that renders it.
@@ -34,22 +32,22 @@ objects:
 # same schema as normal steps and can reference any object in the objects map.
 hooks:
   # Optional. Steps executed before each item in `steps`.
-  before:
+  beforeEach:
     - name: before-each-step
-      object: my-resource
-      actions:
-        - command: Delete
+      delete:
+        target:
+          object: my-resource
 
   # Optional. Steps executed after each item in `steps`. After hooks run even
   # when a before hook or the main step fails, which makes them useful for
   # cleanup and diagnostics.
-  after:
+  afterEach:
     - name: after-each-step
-      object: my-resource
       optional: true
-      actions:
-        - command: Wait
-          deletion: true
+      delete:
+        target:
+          object: my-resource
+        wait: true
 
 # Required. Ordered list of steps to execute sequentially.
 steps:
@@ -65,24 +63,151 @@ steps:
     # continues with the next step instead of aborting the case.
     optional: false
 
-    # Optional. Labels added to the rendered object for this step only.
-    labels:
-      key: value
+    # Each action field is optional. Absent (nil) fields are skipped.
+    # Multiple actions may be set; they execute in a fixed order:
+    #   ensure → patch → wait → assert → delete
+    # The first failure aborts the step (unless optional: true).
+    # Every action embeds two optional timing fields:
+    #   delay    duration  Sleep before executing (e.g. 500ms, 5s, 2m).
+    #   timeout  duration  Hard deadline for this action (where applicable).
 
-    # Optional. Annotations added to the rendered object for this step only.
-    annotations:
-      key: value
+    # ── Ensure ───────────────────────────────────────────────────────────────
+    # Create or update the rendered object using Kubernetes Server-Side Apply.
+    # Requires k8s v1.22+. Field manager is "kube2e".
+    # The object is recorded in the cleanup cache and deleted after the case ends.
+    ensure:
+      # Required. Key from the case-level objects map.
+      object: my-resource
 
-    # Required. Key from the case-level objects map identifying which resource
-    # this step operates on. The key is also the Kubernetes object name.
-    object: my-resource
+      # Optional. Key-value pairs merged with the object name when rendering the
+      # template. The object name is always injected automatically from the
+      # case-level objects map — never include `name` here.
+      # Supports any type: string, int, bool, list, map.
+      values:
+        replicas: 1
+        image: nginx:1.25-alpine
 
-    # Required. One or more actions executed against the object.
-    # See action.yaml for the full action reference.
-    # Ensure is the only action that carries values; all others identify the
-    # object by name + GVK and operate on live cluster state.
-    actions:
-      - command: Ensure
-        values:
-          replicas: 1
-          image: nginx:1.25-alpine
+      # Optional. Retry on failure.
+      retry:
+        attempts: 3
+        backoff: 5s
+
+      delay: 0s
+
+    # ── Patch ─────────────────────────────────────────────────────────────────
+    # Apply one or more RFC 6902 JSON Patch operations to the rendered object,
+    # then ensure it on the cluster using Server-Side Apply.
+    patch:
+      target:
+        # Required. Key from the case-level objects map.
+        object: my-resource
+
+      # Optional. Retry on failure.
+      retry:
+        attempts: 3
+        backoff: 5s
+
+      # Required. List of patch operations.
+      patches:
+        # add — insert a value; creates intermediate objects when missing.
+        - op: add
+          path: /metadata/labels/env
+          value: production
+
+        # replace — overwrite an existing value.
+        - op: replace
+          path: /spec/replicas
+          value: 3
+
+        # remove — delete a key. Errors if the path does not exist.
+        - op: remove
+          path: /metadata/annotations/tmp
+
+        # move — remove from `from` and insert at `path`.
+        - op: move
+          from: /data/old-key
+          path: /data/new-key
+
+        # copy — duplicate the value at `from` to `path`.
+        - op: copy
+          from: /data/src
+          path: /data/dst
+
+        # test — assert that `path` equals `value`; aborts the patch if not.
+        - op: test
+          path: /spec/replicas
+          value: 3
+
+      delay: 0s
+
+    # ── Wait ──────────────────────────────────────────────────────────────────
+    # Poll the object until all JQ conditions evaluate to true, or until the
+    # timeout expires.
+    wait:
+      target:
+        # Required. Key from the case-level objects map.
+        object: my-resource
+
+      # Optional. JQ expressions evaluated against the live object.
+      # Every expression must return a boolean. All must pass simultaneously.
+      #
+      # Common patterns:
+      #   Deployment fully ready : .status.readyReplicas == .spec.replicas
+      #   Pod ready              : any(.status.conditions[]?; .type=="Ready" and .status=="True")
+      #   Job completed          : (.status.succeeded // 0) >= 1
+      #   Custom condition True  : any(.status.conditions[]?; .type=="Available" and .status=="True")
+      conditions:
+        - .status.readyReplicas == .spec.replicas
+
+      # Optional. How often to poll the cluster (default: 2s).
+      interval: 2s
+
+      # Optional. Hard deadline after which Wait returns an error (default: 2m).
+      timeout: 2m
+
+      delay: 0s
+
+    # ── Assert ────────────────────────────────────────────────────────────────
+    # Fetch the object once and check that all JQ conditions are true.
+    # Unlike Wait, Assert does not poll — it checks once (or with retry).
+    assert:
+      target:
+        # Required. Key from the case-level objects map.
+        object: my-resource
+
+      # Optional. JQ expressions that must all return true.
+      conditions:
+        - .status.phase == "Running"
+
+      # Optional. Retry on failure.
+      retry:
+        attempts: 5
+        backoff: 2s
+
+      delay: 0s
+
+    # ── Delete ────────────────────────────────────────────────────────────────
+    # Remove the rendered object from the cluster.
+    # Not-found responses are treated as success (idempotent).
+    delete:
+      target:
+        # Required. Key from the case-level objects map.
+        object: my-resource
+
+      # Optional. When true, block until the object disappears from the cluster.
+      wait: false
+
+      # Optional. How often to poll the cluster (default: 2s). Only relevant
+      # when wait: true.
+      interval: 2s
+
+      # Optional. Timeout for the post-delete wait (default: 2m). Only relevant
+      # when wait: true.
+      timeout: 2m
+
+      # Optional. Retry on failure.
+      retry:
+        attempts: 3
+        backoff: 5s
+
+      delay: 0s

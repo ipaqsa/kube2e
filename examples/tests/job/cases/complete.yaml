@@ -6,12 +6,13 @@ objects:
 
 steps:
   - name: submit
-    object: hello-job
-    actions:
-      - command: Ensure
-        values:
-          command: "echo 'hello from kube2e'"
-      - command: Wait
-        timeout: 2m
-        conditions:
-          - (.status.succeeded // 0) >= 1
+    ensure:
+      object: hello-job
+      values:
+        command: "echo 'hello from kube2e'"
+    wait:
+      target:
+        object: hello-job
+      timeout: 2m
+      conditions:
+        - (.status.succeeded // 0) >= 1

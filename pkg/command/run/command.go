@@ -18,14 +18,18 @@ import (
 )
 
 const (
-	// testsFlag specifies which specific tests suites to run.
-	testsFlag = "tests"
+	// tagsFlag filters test suites and cases by tag (comma-separated list).
+	tagsFlag = "tags"
+	// parallelFlag controls how many test suites run concurrently.
+	parallelFlag = "parallel"
 	// remoteFlag specifies the image with tests to run.
 	remoteFlag = "remote"
 	// remoteUserFlag specifies the user for image for the remote registry.
 	remoteUserFlag = "remote-user"
 	// remotePasswordFlag specifies the password for the remote registry.
 	remotePasswordFlag = "remote-password"
+	// dryRunFlag specifies whether to run in dry run mode (no resources are applied).
+	dryRunFlag = "dry-run"
 )
 
 // NewRunCommand returns the "run" cobra command that executes local or remote test suites.
@@ -37,43 +41,54 @@ func NewRunCommand() *cobra.Command {
 run each one against the configured cluster.
 
 Every immediate subdirectory that contains a test.yaml file is treated as a
-test suite. Use --tests to run only specific suites by name.
+test suite. Use --tags to run only suites and cases that carry matching tags.
 
 Kubeconfig resolution: --kubeconfig flag -> $KUBECONFIG -> ~/.kube/config -> in-cluster.`,
 		Example: `  # Run all test suites in ./examples/tests
   kube2e run ./examples/tests
 
-  # Run only the nginx and job suites
-  kube2e run ./examples/tests --tests nginx,job
+  # Run only tests and cases tagged "smoke" or "aws"
+  kube2e run ./examples/tests --tags smoke,aws
 
-  # Run with warning messages visible
-  kube2e run ./examples/tests -v
+  # Run 4 test suites in parallel
+  kube2e run ./examples/tests -n 4
+
+  # Run in dry run mode
+  kube2e run ./examples/tests --dry-run
 
   # Run remote tests from an image
   kube2e run ./tests --remote ghcr.io/tests/example:v0.0.1
 
-  # Run a specific suite verbosely against an explicit cluster
-  kube2e run ./examples/tests --tests nginx -v --kubeconfig ~/.kube/staging.yaml`,
+  # Run tagged tests against an explicit cluster
+  kube2e run ./examples/tests --tags smoke --kubeconfig ~/.kube/staging.yaml`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE:         run,
 	}
 
-	// --tests: comma-separated list of test directory names; empty means run all.
-	cmd.Flags().String(testsFlag, "", "Comma-separated list of test names to run (default: all)")
-	_ = viper.BindPFlag(testsFlag, cmd.Flags().Lookup("tests")) //nolint:errcheck // not need to verify it
+	// --tags: comma-separated list of tags; empty means run all.
+	cmd.Flags().String(tagsFlag, "", "Comma-separated list of tags to run (default: all)")
+	_ = viper.BindPFlag(tagsFlag, cmd.Flags().Lookup(tagsFlag)) //nolint:errcheck // not need to verify it
+
+	// -n / --parallel: number of concurrent test suites (default: 1 = sequential).
+	cmd.Flags().IntP(parallelFlag, "n", 1, "Number of test suites to run concurrently")
+	_ = viper.BindPFlag(parallelFlag, cmd.Flags().Lookup(parallelFlag)) //nolint:errcheck // not need to verify it
 
 	// --remote: image with tests to run.
 	cmd.Flags().String(remoteFlag, "", "Image with tests to run")
-	_ = viper.BindPFlag(remoteFlag, cmd.Flags().Lookup("remote")) //nolint:errcheck // not need to verify it
+	_ = viper.BindPFlag(remoteFlag, cmd.Flags().Lookup(remoteFlag)) //nolint:errcheck // not need to verify it
 
 	// --remote-user: user for image for the remote registry.
 	cmd.Flags().String(remoteUserFlag, "", "User for image for the remote registry")
-	_ = viper.BindPFlag(remoteUserFlag, cmd.Flags().Lookup("remote-user")) //nolint:errcheck // not need to verify it
+	_ = viper.BindPFlag(remoteUserFlag, cmd.Flags().Lookup(remoteUserFlag)) //nolint:errcheck // not need to verify it
 
 	// --remote-password: password for image for the remote registry.
 	cmd.Flags().String(remotePasswordFlag, "", "Password for the remote registry")
-	_ = viper.BindPFlag(remotePasswordFlag, cmd.Flags().Lookup("remote-password")) //nolint:errcheck // not need to verify it
+	_ = viper.BindPFlag(remotePasswordFlag, cmd.Flags().Lookup(remotePasswordFlag)) //nolint:errcheck // not need to verify it
+
+	// --dry-run: run in dry run mode (no resources are applied).
+	cmd.Flags().Bool(dryRunFlag, false, "Run in dry run mode")
+	_ = viper.BindPFlag(dryRunFlag, cmd.Flags().Lookup(dryRunFlag)) //nolint:errcheck // not need to verify it
 
 	return cmd
 }
@@ -88,18 +103,27 @@ func run(cmd *cobra.Command, args []string) error {
 	remoteUser := viper.GetString(remoteUserFlag)
 	remotePassword := viper.GetString(remotePasswordFlag)
 
-	tests := splitTests(viper.GetString(testsFlag))
+	tags := splitTags(viper.GetString(tagsFlag))
+	parallel := viper.GetInt(parallelFlag)
 
-	restConfig, err := buildRestConfig(kubeconfig)
-	if err != nil {
-		return fmt.Errorf("build rest config: %w", err)
+	dryRun := viper.GetBool(dryRunFlag)
+
+	var restConfig *rest.Config
+	if !dryRun {
+		var err error
+		restConfig, err = buildRestConfig(kubeconfig)
+		if err != nil {
+			return fmt.Errorf("build rest config: %w", err)
+		}
 	}
 
 	logger := logs.New(verbose)
 	cfg := &engine.Config{
 		RestConfig: restConfig,
 		WorkDir:    workDir,
-		Tests:      tests,
+		Tags:       tags,
+		Parallel:   parallel,
+		DryRun:     dryRun,
 	}
 
 	if remote != "" {
@@ -133,17 +157,17 @@ func runRemote(cmd *cobra.Command, cfg *engine.Config, r image.Remote, logger *s
 	return nil
 }
 
-// splitTests splits a comma-separated test allowlist.
-func splitTests(value string) []string {
-	var tests []string
+// splitTags splits a comma-separated tag list, trimming spaces.
+func splitTags(value string) []string {
+	var tags []string
 
 	for t := range strings.SplitSeq(value, ",") {
 		if t = strings.TrimSpace(t); t != "" {
-			tests = append(tests, t)
+			tags = append(tags, t)
 		}
 	}
 
-	return tests
+	return tags
 }
 
 // buildRestConfig constructs a *rest.Config using the standard kubeconfig resolution chain.

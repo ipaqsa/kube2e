@@ -6,12 +6,13 @@ objects:
 
 steps:
   - name: deploy
-    object: nginx
-    actions:
-      - command: Ensure
-        values:
-          replicas: 2
-      - command: Wait
-        timeout: 2m
-        conditions:
-          - .status.readyReplicas == .spec.replicas
+    ensure:
+      object: nginx
+      values:
+        replicas: 2
+    wait:
+      target:
+        object: nginx
+      timeout: 2m
+      conditions:
+        - .status.readyReplicas == .spec.replicas

@@ -11,16 +11,10 @@ description: ""
 # this suite. Objects that carry their own namespace are unaffected.
 namespace: default
 
-# Optional. Labels merged onto every object applied during this suite.
-# Step-level and case-level labels take precedence over these defaults.
-labels:
-  app.kubernetes.io/managed-by: kube2e
-
-# Optional. Annotations merged onto every object applied during this suite.
-annotations:
-  testing.kube2e.io/suite: my-test
-
-# Optional. Basenames of case files (without .yaml) that should be skipped
-# entirely. Useful for quarantining known-flaky cases without deleting them.
-ignored:
-  - flaky-case
+# Optional. Tags used to select this entire suite via --tags.
+# When --tags is given and the suite has non-empty tags, the suite is skipped
+# unless at least one tag matches. A matching suite runs ALL its cases
+# regardless of case-level tags.
+tags:
+  - smoke
+  - aws

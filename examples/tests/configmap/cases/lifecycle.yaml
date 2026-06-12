@@ -1,30 +1,22 @@
 name: lifecycle
-description: Create a ConfigMap, read its version value, then bump it via a patch
+description: Create a ConfigMap then bump its version via a patch
 
 objects:
   app-config: configmap
 
 steps:
   - name: create
-    object: app-config
-    actions:
-      - command: Ensure
-        values:
-          env: production
-          version: "1.0.0"
-
-  - name: read-version
-    object: app-config
-    actions:
-      - command: Value
-        valueKey: currentVersion
-        valuePath: .data.version
+    ensure:
+      object: app-config
+      values:
+        env: production
+        version: "1.0.0"
 
   - name: bump-version
-    object: app-config
-    actions:
-      - command: Patch
-        patches:
-          - op: replace
-            path: /data/version
-            value: "2.0.0"
+    patch:
+      target:
+        object: app-config
+      patches:
+        - op: replace
+          path: /data/version
+          value: "2.0.0"

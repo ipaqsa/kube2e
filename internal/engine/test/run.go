@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,13 +17,10 @@ import (
 )
 
 type service struct {
-	kube     *svckube.Service
-	template *template.Manager
-
-	labels      map[string]string
+	kube        *svckube.Service
+	template    *template.Manager
 	annotations map[string]string
-
-	logger *slog.Logger
+	logger      *slog.Logger
 }
 
 // Config carries the inputs required to run a single test suite directory.
@@ -32,7 +30,12 @@ type Config struct {
 	// TestDir is the filesystem path of the directory containing test.yaml.
 	TestDir string
 
+	// Tags is the requested tag filter from the CLI. Empty means run all.
+	Tags []string
+
 	Logger *slog.Logger
+
+	DryRun bool
 }
 
 // Run sets up services and orchestrates test cases found in the directory.
@@ -49,22 +52,28 @@ func Run(ctx context.Context, conf *Config) error {
 		return nil
 	}
 
+	// Test-level tag filter: if the test carries non-empty tags and none match,
+	// skip the entire suite without error.
+	if len(conf.Tags) > 0 && len(test.Tags) > 0 && !anyTagMatches(test.Tags, conf.Tags) {
+		conf.Logger.Info("skip test (no matching tags)", "name", test.Name, "tags", test.Tags)
+		return nil
+	}
+
 	conf.Logger.Info("run test", "name", test.Name)
 
 	svc := new(service)
 
-	svc.labels = test.Labels
-	svc.annotations = test.Annotations
+	// Inject the kube2e test-level tracing annotation.
+	svc.annotations = map[string]string{testAnnotation: test.Name}
 
 	svc.logger = conf.Logger.With("test", test.Name)
 
-	opts := []svckube.Option{
-		svckube.WithLabels(test.Labels),
-		svckube.WithAnnotations(test.Annotations),
-		svckube.WithNamespace(test.Namespace),
+	kubeOpts := []svckube.Option{svckube.WithNamespace(test.Namespace)}
+	if conf.DryRun {
+		kubeOpts = append(kubeOpts, svckube.WithDryRun())
 	}
 
-	if svc.kube, err = svckube.New(conf.RestConf, svc.logger, opts...); err != nil {
+	if svc.kube, err = svckube.New(conf.RestConf, svc.logger, kubeOpts...); err != nil {
 		return fmt.Errorf("create kube service: %w", err)
 	}
 
@@ -81,11 +90,18 @@ func Run(ctx context.Context, conf *Config) error {
 
 	svc.logger.Debug("test service initialized")
 
-	return svc.run(ctx, test)
+	// When the test itself has a matching tag, propagate nil tags so all cases
+	// run without case-level filtering.
+	caseTags := conf.Tags
+	if len(test.Tags) > 0 && anyTagMatches(test.Tags, conf.Tags) {
+		caseTags = nil
+	}
+
+	return svc.run(ctx, test, caseTags)
 }
 
 // run executes the parsed test.
-func (s *service) run(ctx context.Context, test *Test) error {
+func (s *service) run(ctx context.Context, test *Test, caseTags []string) error {
 	if test == nil {
 		return interrors.ErrNilTest
 	}
@@ -118,7 +134,7 @@ func (s *service) run(ctx context.Context, test *Test) error {
 
 			Path: casePath,
 
-			Labels:      s.labels,
+			Tags:        caseTags,
 			Annotations: s.annotations,
 
 			Logger: s.logger,
@@ -141,4 +157,15 @@ func (s *service) run(ctx context.Context, test *Test) error {
 	}
 
 	return nil
+}
+
+// anyTagMatches reports whether items contains at least one element from requested.
+func anyTagMatches(items, requested []string) bool {
+	for _, item := range items {
+		if slices.Contains(requested, item) {
+			return true
+		}
+	}
+
+	return false
 }

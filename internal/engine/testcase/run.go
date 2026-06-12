@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 
 	"github.com/ipaqsa/kube2e/internal/engine/step"
 	interrors "github.com/ipaqsa/kube2e/internal/errors"
@@ -16,15 +17,11 @@ import (
 )
 
 type service struct {
-	kube     *svckube.Service
-	template *template.Manager
-
-	labels      map[string]string
+	kube        *svckube.Service
+	template    *template.Manager
 	annotations map[string]string
-
-	values *safe.Store[string]
-
-	logger *slog.Logger
+	values      *safe.Store[string]
+	logger      *slog.Logger
 }
 
 // Config holds parameters for a test case execution.
@@ -34,7 +31,11 @@ type Config struct {
 
 	Path string
 
-	Labels      map[string]string
+	// Tags is the requested tag filter. When non-empty the case is skipped unless
+	// it has at least one matching tag.
+	Tags []string
+
+	// Annotations carries engine-injected tracing annotations (e.g. test name).
 	Annotations map[string]string
 
 	Logger *slog.Logger
@@ -47,26 +48,24 @@ func Run(ctx context.Context, conf *Config) error {
 		return fmt.Errorf("parse case file '%s': %w", conf.Path, err)
 	}
 
+	// Case-level tag filter: skip if tags requested but none of the case's tags match.
+	if len(conf.Tags) > 0 && !anyTagMatches(testCase.Tags, conf.Tags) {
+		conf.Logger.Info("skip case (no matching tags)", "name", testCase.Name, "tags", testCase.Tags)
+		return nil
+	}
+
 	svc := new(service)
 
 	svc.kube = conf.Kube
 	svc.template = conf.Template
-
-	svc.labels = conf.Labels
-	svc.annotations = conf.Annotations
 	svc.values = safe.NewStore[string]()
 
-	if len(svc.labels) == 0 {
-		svc.labels = make(map[string]string)
-	}
-
-	maps.Copy(svc.labels, testCase.Labels)
-
+	svc.annotations = maps.Clone(conf.Annotations)
 	if len(svc.annotations) == 0 {
 		svc.annotations = make(map[string]string)
 	}
 
-	maps.Copy(svc.annotations, testCase.Annotations)
+	svc.annotations[caseAnnotation] = testCase.Name
 
 	svc.logger = conf.Logger.With("case", testCase.Name)
 
@@ -101,13 +100,13 @@ func (s *service) run(ctx context.Context, testCase *Case) error {
 func (s *service) runStepWithHooks(ctx context.Context, testCase *Case, caseStep *step.Step) error {
 	var result error
 
-	if err := s.runSteps(ctx, testCase, testCase.Hooks.Before, "before hook"); err != nil {
+	if err := s.runSteps(ctx, testCase, testCase.Hooks.BeforeEach, "before hook"); err != nil {
 		result = errors.Join(result, err)
 	} else if err = s.runStep(ctx, testCase, caseStep, "step"); err != nil {
 		result = errors.Join(result, err)
 	}
 
-	if err := s.runSteps(ctx, testCase, testCase.Hooks.After, "after hook"); err != nil {
+	if err := s.runSteps(ctx, testCase, testCase.Hooks.AfterEach, "after hook"); err != nil {
 		result = errors.Join(result, err)
 	}
 
@@ -123,6 +122,17 @@ func (s *service) runSteps(ctx context.Context, testCase *Case, steps []*step.St
 	}
 
 	return nil
+}
+
+// anyTagMatches reports whether items contains at least one element from requested.
+func anyTagMatches(items, requested []string) bool {
+	for _, item := range items {
+		if slices.Contains(requested, item) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // runStep executes one step using the test case services.
@@ -142,7 +152,6 @@ func (s *service) runStep(ctx context.Context, testCase *Case, st *step.Step, ph
 
 		Step: st,
 
-		Labels:      s.labels,
 		Annotations: s.annotations,
 		Values:      s.values,
 

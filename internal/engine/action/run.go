@@ -1,178 +1,135 @@
-// Package action implements Kubernetes resource operations (Ensure, Delete, Wait, Patch).
+// Package action implements Kubernetes resource operations (Ensure, Delete, Wait, Patch, Assert).
 package action
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	svckube "github.com/ipaqsa/kube2e/internal/kube"
-	"github.com/ipaqsa/kube2e/internal/tools/safe"
 )
 
 const (
-	// create or update the object.
-	commandEnsure = "Ensure"
-	// delete the object.
-	commandDelete = "Delete"
-	// wait for specific condition.
-	commandWait = "Wait"
-	// patch the object.
-	commandPatch = "Patch"
-	// extract value from object and store in shared values.
-	commandValue = "Value"
-
-	// polling interval.
+	// defaultWaitInterval is the polling cadence for Wait.
 	defaultWaitInterval = 2 * time.Second
-	// polling timeout.
+	// defaultWaitTimeout is the hard deadline for Wait and delete-wait.
 	defaultWaitTimeout = 2 * time.Minute
 )
 
-type service struct {
-	kube *svckube.Service
-
-	labels      map[string]string
-	annotations map[string]string
-	values      *safe.Store[string]
-
-	logger *slog.Logger
-}
-
-// Config holds parameters for a single action execution.
+// Config is the shared configuration passed to all Run* functions.
 type Config struct {
-	Kube *svckube.Service
-
-	Object client.Object
-	Action Action
-
-	Labels      map[string]string
+	Kube        *svckube.Service
+	Object      client.Object
 	Annotations map[string]string
-	Values      *safe.Store[string]
-
-	Logger *slog.Logger
+	Logger      *slog.Logger
 }
 
-// Run executes the provided action against the kubernetes cluster using the
-// given services and template manager.
-func Run(ctx context.Context, conf *Config) error {
-	svc := new(service)
+// RunEnsure creates or updates the object on the cluster using Server-Side Apply.
+func RunEnsure(ctx context.Context, conf *Config, act *Ensure) error {
+	log := conf.Logger.With("action", "ensure", "name", conf.Object.GetName())
 
-	svc.kube = conf.Kube
+	applyDelay(log, act.Delay)
 
-	svc.labels = conf.Labels
-	svc.annotations = conf.Annotations
-	svc.values = conf.Values
-
-	svc.logger = conf.Logger.With("action", conf.Action.String(conf.Object.GetName()))
-
-	return svc.run(ctx, conf.Action, conf.Object)
-}
-
-func (s *service) run(ctx context.Context, action Action, obj client.Object) error {
-	s.logger.Info("handle command", "name", action.Command)
+	log.Info("ensure object")
 
 	start := time.Now()
+	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
 
-	defer func() {
-		s.logger.Info("command finished", "duration", time.Since(start))
-	}()
-
-	if action.Delay != nil {
-		s.logger.Info("command delay", "duration", action.Delay.Duration)
-		time.Sleep(action.Delay.Duration)
-	}
-
-	switch action.Command {
-	case commandEnsure:
-		return s.handleEnsure(ctx, obj)
-	case commandDelete:
-		return s.handleDelete(ctx, obj)
-	case commandWait:
-		return s.handleWait(ctx, action, obj)
-	case commandPatch:
-		return s.handlePatch(ctx, action, obj)
-	case commandValue:
-		return s.handleValue(ctx, action, obj)
-	}
-
-	return nil
+	return conf.Kube.Ensure(ctx, conf.Object,
+		svckube.WithEnsureAnnotations(conf.Annotations),
+		svckube.WithEnsureRetry(act.Retry.attempts(), act.Retry.backoff()))
 }
 
-// handleEnsure renders the object template and ensures its presence on the cluster.
-func (s *service) handleEnsure(ctx context.Context, obj client.Object) error {
-	s.logger.Debug("ensure object", "name", obj.GetName(), "namespace", obj.GetNamespace())
+// RunDelete removes the object from the cluster. When act.Wait is true it
+// blocks until the object disappears or act.Time elapses.
+func RunDelete(ctx context.Context, conf *Config, act *Delete) error {
+	log := conf.Logger.With("action", "delete", "name", conf.Object.GetName())
 
-	return s.kube.Ensure(ctx, obj,
-		svckube.WithEnsureLabels(s.labels),
-		svckube.WithEnsureAnnotations(s.annotations))
+	applyDelay(log, act.Delay)
+
+	log.Info("delete object")
+
+	start := time.Now()
+	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
+
+	return conf.Kube.Delete(ctx, conf.Object,
+		svckube.WithDeleteWait(act.Wait, act.TimeoutOrDefault(defaultWaitTimeout)),
+		svckube.WithDeleteInterval(act.IntervalOrDefault(defaultWaitInterval)),
+		svckube.WithDeleteRetry(act.Retry.attempts(), act.Retry.backoff()))
 }
 
-// handleDelete renders the object template and deletes it from the cluster.
-func (s *service) handleDelete(ctx context.Context, obj client.Object) error {
-	s.logger.Debug("delete object", "name", obj.GetName())
+// RunWait polls the object until all JQ conditions pass or the timeout expires.
+func RunWait(ctx context.Context, conf *Config, act *Wait) error {
+	log := conf.Logger.With("action", "wait", "name", conf.Object.GetName())
 
-	return s.kube.Delete(ctx, obj)
+	applyDelay(log, act.Delay)
+
+	log.Info("wait for conditions")
+
+	start := time.Now()
+	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
+
+	return conf.Kube.Wait(ctx, conf.Object,
+		svckube.WithWaitConditions(act.Conditions),
+		svckube.WithWaitInterval(act.IntervalOrDefault(defaultWaitInterval)),
+		svckube.WithWaitTimeout(act.TimeoutOrDefault(defaultWaitTimeout)))
 }
 
-// handleWait renders the object template and waits for the specified condition.
-func (s *service) handleWait(ctx context.Context, action Action, obj client.Object) error {
-	s.logger.Debug("wait for object`s condition", "name", obj.GetName())
+// RunPatch applies RFC 6902 JSON patches to the rendered object and re-ensures it.
+func RunPatch(ctx context.Context, conf *Config, act *Patch) error {
+	log := conf.Logger.With("action", "patch", "name", conf.Object.GetName())
 
-	opts := []svckube.WaitOptionFunc{
-		svckube.WithWaitConditions(action.Conditions),
-		svckube.WithWaitInterval(action.IntervalOrDefault(defaultWaitInterval)),
-		svckube.WithWaitTimeout(action.TimeoutOrDefault(defaultWaitTimeout)),
-		svckube.WithOnDeletion(action.Deletion),
-	}
+	applyDelay(log, act.Delay)
 
-	return s.kube.Wait(ctx, obj, opts...)
-}
-
-// handlePatch renders the object template and applies json patches before ensuring it.
-func (s *service) handlePatch(ctx context.Context, action Action, obj client.Object) error {
-	s.logger.Debug("patch object", "name", obj.GetName())
-
-	if len(action.Patches) == 0 {
+	if len(act.Patches) == 0 {
 		return nil
 	}
+
+	log.Info("patch object")
+
+	start := time.Now()
+	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
 
 	opts := jsonpatch.NewApplyOptions()
 	opts.EnsurePathExistsOnAdd = true
 
-	patched, err := action.Patches.Apply(obj, opts)
+	patched, err := act.Patches.Apply(conf.Object, opts)
 	if err != nil {
-		return fmt.Errorf("apply patch to the object '%s': %w", obj, err)
+		return fmt.Errorf("apply patch to object '%s': %w", conf.Object.GetName(), err)
 	}
 
-	return s.kube.Ensure(ctx, patched)
+	return conf.Kube.Ensure(ctx, patched,
+		svckube.WithEnsureRetry(act.Retry.attempts(), act.Retry.backoff()))
 }
 
-// handleValue extracts a value from the object using a JQ path and stores it in shared values.
-func (s *service) handleValue(ctx context.Context, action Action, obj client.Object) error {
-	s.logger.Debug("set value from object", "name", obj.GetName(), "key", action.ValueKey, "path", action.ValuePath)
+// RunAssert fetches the object once and checks that all JQ conditions evaluate
+// to true. When act.Retry is set the check is repeated up to Retry.Attempts
+// times with Retry.Backoff between each attempt.
+func RunAssert(ctx context.Context, conf *Config, act *Assert) error {
+	log := conf.Logger.With("action", "assert", "name", conf.Object.GetName())
 
-	if action.ValueKey == "" {
-		return errors.New("valueKey is required")
+	applyDelay(log, act.Delay)
+
+	log.Info("assert conditions")
+
+	start := time.Now()
+	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
+
+	return conf.Kube.Check(ctx, conf.Object, act.Conditions,
+		svckube.WithCheckRetry(act.Retry.attempts(), act.Retry.backoff()))
+}
+
+// applyDelay sleeps for the configured duration if set.
+func applyDelay(log *slog.Logger, delay *metav1.Duration) {
+	if delay == nil || delay.Duration <= 0 {
+		return
 	}
 
-	if action.ValuePath == "" {
-		return errors.New("valuePath is required")
-	}
-
-	value, err := s.kube.Filter(ctx, obj, action.ValuePath)
-	if err != nil {
-		return fmt.Errorf("extract value using path '%s': %w", action.ValuePath, err)
-	}
-
-	// Store in shared values
-	s.values.Put(action.ValueKey, value)
-
-	s.logger.Info("value stored", "key", action.ValueKey, "value", value)
-
-	return nil
+	log.Info("action delay", "duration", delay.Duration)
+	time.Sleep(delay.Duration)
 }
