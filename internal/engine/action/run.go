@@ -19,6 +19,8 @@ const (
 	defaultWaitInterval = 2 * time.Second
 	// defaultWaitTimeout is the hard deadline for Wait and delete-wait.
 	defaultWaitTimeout = 2 * time.Minute
+	// defaultExecTimeout is the hard deadline for a single Exec command.
+	defaultExecTimeout = 30 * time.Second
 )
 
 // Config is the shared configuration passed to all Run* functions.
@@ -30,98 +32,161 @@ type Config struct {
 }
 
 // RunEnsure creates or updates the object on the cluster using Server-Side Apply.
-func RunEnsure(ctx context.Context, conf *Config, act *Ensure) error {
-	log := conf.Logger.With("action", "ensure", "name", conf.Object.GetName())
+func RunEnsure(ctx context.Context, conf *Config, act *Ensure) (*Report, error) {
+	report := newReport("ensure", Target{Object: act.Object})
+	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
+	log := conf.Logger.With("action", "ensure", "name", conf.Object.GetName(), "gvk", gvk)
 
 	applyDelay(log, act.Delay)
 
 	log.Info("ensure object")
 
 	start := time.Now()
-	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
+	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	return conf.Kube.Ensure(ctx, conf.Object,
+	err := conf.Kube.Ensure(ctx, conf.Object,
 		svckube.WithEnsureAnnotations(conf.Annotations),
 		svckube.WithEnsureRetry(act.Retry.attempts(), act.Retry.backoff()))
+
+	return finishReport(report, err)
 }
 
 // RunDelete removes the object from the cluster. When act.Wait is true it
 // blocks until the object disappears or act.Time elapses.
-func RunDelete(ctx context.Context, conf *Config, act *Delete) error {
-	log := conf.Logger.With("action", "delete", "name", conf.Object.GetName())
+func RunDelete(ctx context.Context, conf *Config, act *Delete) (*Report, error) {
+	report := newReport("delete", act.Target)
+	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
+	log := conf.Logger.With("action", "delete", "name", conf.Object.GetName(), "gvk", gvk)
 
 	applyDelay(log, act.Delay)
 
 	log.Info("delete object")
 
 	start := time.Now()
-	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
+	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	return conf.Kube.Delete(ctx, conf.Object,
+	err := conf.Kube.Delete(ctx, conf.Object,
 		svckube.WithDeleteWait(act.Wait, act.TimeoutOrDefault(defaultWaitTimeout)),
 		svckube.WithDeleteInterval(act.IntervalOrDefault(defaultWaitInterval)),
 		svckube.WithDeleteRetry(act.Retry.attempts(), act.Retry.backoff()))
+
+	return finishReport(report, err)
 }
 
 // RunWait polls the object until all JQ conditions pass or the timeout expires.
-func RunWait(ctx context.Context, conf *Config, act *Wait) error {
-	log := conf.Logger.With("action", "wait", "name", conf.Object.GetName())
+func RunWait(ctx context.Context, conf *Config, act *Wait) (*Report, error) {
+	report := newReport("wait", act.Target)
+	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
+	log := conf.Logger.With("action", "wait", "name", conf.Object.GetName(), "gvk", gvk)
 
 	applyDelay(log, act.Delay)
 
 	log.Info("wait for conditions")
 
 	start := time.Now()
-	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
+	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	return conf.Kube.Wait(ctx, conf.Object,
+	err := conf.Kube.Wait(ctx, conf.Object,
 		svckube.WithWaitConditions(act.Conditions),
 		svckube.WithWaitInterval(act.IntervalOrDefault(defaultWaitInterval)),
 		svckube.WithWaitTimeout(act.TimeoutOrDefault(defaultWaitTimeout)))
+
+	return finishReport(report, err)
 }
 
 // RunPatch applies RFC 6902 JSON patches to the rendered object and re-ensures it.
-func RunPatch(ctx context.Context, conf *Config, act *Patch) error {
-	log := conf.Logger.With("action", "patch", "name", conf.Object.GetName())
+func RunPatch(ctx context.Context, conf *Config, act *Patch) (*Report, error) {
+	report := newReport("patch", act.Target)
+	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
+	log := conf.Logger.With("action", "patch", "name", conf.Object.GetName(), "gvk", gvk)
 
 	applyDelay(log, act.Delay)
 
 	if len(act.Patches) == 0 {
-		return nil
+		return finishReport(report, nil)
 	}
 
 	log.Info("patch object")
 
 	start := time.Now()
-	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
+	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
 	opts := jsonpatch.NewApplyOptions()
 	opts.EnsurePathExistsOnAdd = true
 
 	patched, err := act.Patches.Apply(conf.Object, opts)
 	if err != nil {
-		return fmt.Errorf("apply patch to object '%s': %w", conf.Object.GetName(), err)
+		return finishReport(report, fmt.Errorf("apply patch to object '%s': %w", conf.Object.GetName(), err))
 	}
 
-	return conf.Kube.Ensure(ctx, patched,
+	err = conf.Kube.Ensure(ctx, patched,
 		svckube.WithEnsureRetry(act.Retry.attempts(), act.Retry.backoff()))
+
+	return finishReport(report, err)
 }
 
 // RunAssert fetches the object once and checks that all JQ conditions evaluate
 // to true. When act.Retry is set the check is repeated up to Retry.Attempts
 // times with Retry.Backoff between each attempt.
-func RunAssert(ctx context.Context, conf *Config, act *Assert) error {
-	log := conf.Logger.With("action", "assert", "name", conf.Object.GetName())
+func RunAssert(ctx context.Context, conf *Config, act *Assert) (*Report, error) {
+	report := newReport("assert", act.Target)
+	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
+	log := conf.Logger.With("action", "assert", "name", conf.Object.GetName(), "gvk", gvk)
 
 	applyDelay(log, act.Delay)
 
 	log.Info("assert conditions")
 
 	start := time.Now()
-	defer func() { log.Info("action finished", "duration", time.Since(start)) }()
+	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	return conf.Kube.Check(ctx, conf.Object, act.Conditions,
+	err := conf.Kube.Check(ctx, conf.Object, act.Conditions,
 		svckube.WithCheckRetry(act.Retry.attempts(), act.Retry.backoff()))
+
+	return finishReport(report, err)
+}
+
+// RunLogs polls the logs of the named Pod until they contain act.Contains or
+// the timeout expires.
+func RunLogs(ctx context.Context, conf *Config, act *Logs) (*Report, error) {
+	report := newReport("logs", act.Target)
+	log := conf.Logger.With("action", "logs", "name", conf.Object.GetName())
+
+	applyDelay(log, act.Delay)
+
+	log.Info("wait for log output", "contains", act.Contains)
+
+	start := time.Now()
+	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
+
+	err := conf.Kube.LogsContains(ctx, conf.Object, act.Contains,
+		svckube.WithLogsContainer(act.Container),
+		svckube.WithLogsMatch(svckube.LogsMatch(act.Match)),
+		svckube.WithLogsInterval(act.IntervalOrDefault(defaultWaitInterval)),
+		svckube.WithLogsTimeout(act.TimeoutOrDefault(defaultWaitTimeout)))
+
+	return finishReport(report, err)
+}
+
+// RunExec runs act.Command inside the resolved pod and succeeds when the
+// command exits with code zero.
+func RunExec(ctx context.Context, conf *Config, act *Exec) (*Report, error) {
+	report := newReport("exec", act.Target)
+	log := conf.Logger.With("action", "exec", "name", conf.Object.GetName())
+
+	applyDelay(log, act.Delay)
+
+	log.Info("exec command", "command", act.Command)
+
+	start := time.Now()
+	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
+
+	err := conf.Kube.Exec(ctx, conf.Object, act.Command,
+		svckube.WithExecContainer(act.Container),
+		svckube.WithExecRetry(act.Retry.attempts(), act.Retry.backoff()),
+		svckube.WithExecTimeout(act.TimeoutOrDefault(defaultExecTimeout)))
+
+	return finishReport(report, err)
 }
 
 // applyDelay sleeps for the configured duration if set.

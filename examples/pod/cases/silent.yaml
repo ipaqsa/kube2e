@@ -1,0 +1,30 @@
+version: v1
+name: silent
+description: Run a pod and assert that its logs contain no errors
+tags:
+  - pod
+  - logs
+namespace: kube2e-pod
+
+objects:
+  checker: pod
+
+steps:
+  - name: run-and-verify-no-errors
+    ensure:
+      object: checker
+      values:
+        command: "echo 'all good'"
+    wait:
+      target:
+        object: checker
+      timeout: 1m
+      conditions:
+        - .status.phase == "Succeeded"
+    logs:
+      target:
+        object: checker
+      container: runner
+      contains: "error"
+      match: none
+      timeout: 10s

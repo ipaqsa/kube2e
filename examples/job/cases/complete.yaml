@@ -1,0 +1,56 @@
+version: v1
+name: complete
+description: |
+  Run two jobs back-to-back using hooks. beforeEach deletes the previous Job so
+  Kubernetes allows a fresh submission with the same name. afterEach optionally
+  asserts the job succeeded before moving on.
+tags:
+  - job
+  - hooks
+  - cleanup
+namespace: kube2e-job
+
+objects:
+  worker: job
+
+hooks:
+  beforeEach:
+    - name: delete-previous
+      optional: true
+      delete:
+        target:
+          object: worker
+        wait: true
+  afterEach:
+    - name: verify-success
+      optional: true
+      assert:
+        target:
+          object: worker
+        conditions:
+          - (.status.succeeded // 0) >= 1
+
+steps:
+  - name: echo-hello
+    ensure:
+      object: worker
+      values:
+        command: "echo 'hello from kube2e'"
+    wait:
+      target:
+        object: worker
+      timeout: 2m
+      conditions:
+        - (.status.succeeded // 0) >= 1
+
+  - name: echo-world
+    ensure:
+      object: worker
+      values:
+        command: "echo 'world'"
+    wait:
+      target:
+        object: worker
+      timeout: 2m
+      conditions:
+        - (.status.succeeded // 0) >= 1

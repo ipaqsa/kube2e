@@ -1,0 +1,30 @@
+version: v1
+name: report
+description: Run a reporting job and assert it completed without failures
+tags:
+  - smoke
+  - job
+  - wait
+namespace: kube2e-job
+
+objects:
+  reporter: job
+
+steps:
+  - name: generate
+    ensure:
+      object: reporter
+      values:
+        command: "echo 'report generated at' $(date -u)"
+    wait:
+      target:
+        object: reporter
+      timeout: 2m
+      conditions:
+        - (.status.succeeded // 0) >= 1
+    assert:
+      target:
+        object: reporter
+      conditions:
+        - (.status.failed // 0) == 0
+        - (.status.succeeded // 0) >= 1

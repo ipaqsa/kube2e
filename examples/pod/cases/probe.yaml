@@ -1,0 +1,37 @@
+version: v1
+name: probe
+description: Run a long-lived pod and exec into it to verify the environment
+tags:
+  - pod
+  - exec
+namespace: kube2e-pod
+
+objects:
+  runner: pod
+
+steps:
+  - name: run-and-probe
+    ensure:
+      object: runner
+      values:
+        command: "sleep 60"
+    wait:
+      target:
+        object: runner
+      timeout: 30s
+      conditions:
+        - .status.phase == "Running"
+    exec:
+      target:
+        object: runner
+      container: runner
+      command:
+        - sh
+        - -c
+        - "echo ok"
+      timeout: 10s
+    delete:
+      target:
+        object: runner
+      wait: true
+      timeout: 30s

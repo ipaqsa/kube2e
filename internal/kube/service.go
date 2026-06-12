@@ -5,19 +5,26 @@ package kube
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
+	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/cli-utils/pkg/kstatus/polling"
 	"sigs.k8s.io/cli-utils/pkg/kstatus/polling/event"
@@ -43,6 +50,8 @@ const (
 // applied-resource cache used for automatic cleanup after each test case.
 type Service struct {
 	cli       client.Client
+	clientset kubernetes.Interface
+	restCfg   *rest.Config
 	namespace string
 	poller    *polling.StatusPoller
 	disc      discovery.DiscoveryInterface
@@ -112,6 +121,14 @@ func New(cfg *rest.Config, logger *slog.Logger, opts ...Option) (*Service, error
 	}
 
 	svc.disc = disc
+
+	clientset, err := kubernetes.NewForConfigAndClient(cfg, httpClient)
+	if err != nil {
+		return nil, fmt.Errorf("build clientset: %w", err)
+	}
+
+	svc.clientset = clientset
+	svc.restCfg = cfg
 
 	cli, err := client.New(cfg, client.Options{Scheme: sch})
 	if err != nil {
@@ -640,6 +657,379 @@ func toUnstructured(obj client.Object) (*unstructured.Unstructured, error) {
 	return u, nil
 }
 
+// defaultLogsTailLines is the number of log lines fetched from the tail on each
+// poll tick. Keeps each fetch cheap while covering typical test output windows.
+const defaultLogsTailLines int64 = 200
+
+// LogsMatch controls how log contents are evaluated across pods.
+type LogsMatch string
+
+const (
+	// LogsMatchAny succeeds when at least one pod's logs contain the string (default).
+	LogsMatchAny LogsMatch = "any"
+	// LogsMatchAll succeeds when every pod's logs contain the string.
+	LogsMatchAll LogsMatch = "all"
+	// LogsMatchNone succeeds when no pod's logs contain the string.
+	LogsMatchNone LogsMatch = "none"
+)
+
+// LogsOptions controls polling behavior for LogsContains.
+type LogsOptions struct {
+	interval  time.Duration
+	timeout   time.Duration
+	container string
+	match     LogsMatch
+}
+
+func newLogsOptions() *LogsOptions {
+	return &LogsOptions{
+		interval: waitInterval,
+		timeout:  2 * time.Minute,
+		match:    LogsMatchAny,
+	}
+}
+
+// LogsOptionFunc is a functional option for a single LogsContains call.
+type LogsOptionFunc func(*LogsOptions)
+
+// WithLogsInterval sets the poll interval for log checks. Zero values are ignored.
+func WithLogsInterval(interval time.Duration) LogsOptionFunc {
+	return func(o *LogsOptions) {
+		if interval > 0 {
+			o.interval = interval
+		}
+	}
+}
+
+// WithLogsTimeout sets a hard deadline for log polling. Zero values are ignored.
+func WithLogsTimeout(timeout time.Duration) LogsOptionFunc {
+	return func(o *LogsOptions) {
+		if timeout > 0 {
+			o.timeout = timeout
+		}
+	}
+}
+
+// WithLogsContainer restricts log streaming to the named container. When empty,
+// Kubernetes picks the first (or only) container in the pod.
+func WithLogsContainer(container string) LogsOptionFunc {
+	return func(o *LogsOptions) {
+		o.container = container
+	}
+}
+
+// WithLogsMatch sets the pod match policy. Empty values are ignored and the
+// default (any) is preserved.
+func WithLogsMatch(match LogsMatch) LogsOptionFunc {
+	return func(o *LogsOptions) {
+		if match != "" {
+			o.match = match
+		}
+	}
+}
+
+// LogsContains polls the logs of obj until they contain expected, the context
+// is canceled, or the timeout expires. obj may be a Pod, Deployment, ReplicaSet,
+// or StatefulSet — workload types are resolved to a running pod via their
+// spec.selector.matchLabels. Returns ErrLogsNotContain on timeout.
+func (s *Service) LogsContains(ctx context.Context, obj client.Object, expected string, opts ...LogsOptionFunc) error {
+	if obj == nil {
+		return interrors.ErrNilObject
+	}
+
+	if s.dryRun {
+		s.logger.Debug("dry run enabled, skipping logs check")
+
+		return nil
+	}
+
+	if err := s.setNamespace(obj); err != nil {
+		return fmt.Errorf("set namespace for object '%s': %w", obj.GetName(), err)
+	}
+
+	logsOpts := newLogsOptions()
+	for _, opt := range opts {
+		opt(logsOpts)
+	}
+
+	s.logger.Debug("polling logs",
+		"name", obj.GetName(),
+		"kind", obj.GetObjectKind().GroupVersionKind().Kind,
+		"namespace", obj.GetNamespace(),
+		"contains", expected)
+
+	tail := defaultLogsTailLines
+	podLogOpts := &corev1.PodLogOptions{Container: logsOpts.container, TailLines: &tail}
+
+	pollErr := wait.PollUntilContextTimeout(ctx, logsOpts.interval, logsOpts.timeout, true,
+		func(ctx context.Context) (bool, error) {
+			reqs, err := s.resolvePodsForLogs(ctx, obj, podLogOpts)
+			if err != nil {
+				s.logger.Debug("could not resolve pods for logs", "name", obj.GetName(), "error", err)
+
+				return false, nil
+			}
+
+			matched, checked := 0, 0
+
+			for _, req := range reqs {
+				stream, streamErr := req.Stream(ctx)
+				if streamErr != nil {
+					s.logger.Debug("pod logs not yet available", "name", obj.GetName(), "error", streamErr)
+
+					continue
+				}
+
+				data, readErr := io.ReadAll(stream)
+
+				if err := stream.Close(); err != nil {
+					s.logger.Debug("close pod log stream error", "name", obj.GetName(), "error", err)
+				}
+
+				if readErr != nil {
+					s.logger.Debug("read pod logs error", "name", obj.GetName(), "error", readErr)
+
+					continue
+				}
+
+				checked++
+
+				if strings.Contains(string(data), expected) {
+					matched++
+				}
+			}
+
+			if checked == 0 {
+				return false, nil
+			}
+
+			switch logsOpts.match {
+			case LogsMatchAll:
+				return matched == checked, nil
+			case LogsMatchNone:
+				return matched == 0, nil
+			default:
+				return matched > 0, nil
+			}
+		})
+	if pollErr != nil {
+		return fmt.Errorf("%w: %q not found in logs of %s %q",
+			interrors.ErrLogsNotContain, expected,
+			obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName())
+	}
+
+	return nil
+}
+
+// resolvePodsForLogs builds a log request for every available pod of obj.
+// Pods are resolved directly; Deployment, ReplicaSet, and StatefulSet are
+// resolved to their pods via spec.selector.matchLabels. Failed and Unknown
+// pods are excluded.
+func (s *Service) resolvePodsForLogs(ctx context.Context, obj client.Object, logOpts *corev1.PodLogOptions) ([]*rest.Request, error) {
+	gvk := obj.GetObjectKind().GroupVersionKind()
+	ns := obj.GetNamespace()
+
+	if gvk.Kind == "Pod" {
+		req := s.clientset.CoreV1().Pods(ns).GetLogs(obj.GetName(), logOpts)
+
+		return []*rest.Request{req}, nil
+	}
+
+	switch gvk.Kind {
+	case "Deployment", "ReplicaSet", "StatefulSet":
+	default:
+		return nil, fmt.Errorf("logs action not supported for %s; use Pod, Deployment, ReplicaSet, or StatefulSet", gvk.Kind)
+	}
+
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(gvk)
+
+	if err := s.cli.Get(ctx, client.ObjectKeyFromObject(obj), live); err != nil {
+		return nil, fmt.Errorf("get %s %q: %w", gvk.Kind, obj.GetName(), err)
+	}
+
+	matchLabels, found, err := unstructured.NestedStringMap(live.Object, "spec", "selector", "matchLabels")
+	if err != nil {
+		return nil, fmt.Errorf("read spec.selector.matchLabels from %s %q: %w", gvk.Kind, obj.GetName(), err)
+	}
+
+	if !found || len(matchLabels) == 0 {
+		return nil, fmt.Errorf("%s %q has no spec.selector.matchLabels", gvk.Kind, obj.GetName())
+	}
+
+	sel := labels.Set(matchLabels).String()
+
+	pods, err := s.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: sel})
+	if err != nil {
+		return nil, fmt.Errorf("list pods for %s %q: %w", gvk.Kind, obj.GetName(), err)
+	}
+
+	reqs := make([]*rest.Request, 0, len(pods.Items))
+
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+
+		switch pod.Status.Phase {
+		case corev1.PodFailed, corev1.PodUnknown:
+			// skip degraded pods
+		default:
+			reqs = append(reqs, s.clientset.CoreV1().Pods(ns).GetLogs(pod.Name, logOpts))
+		}
+	}
+
+	if len(reqs) == 0 {
+		return nil, fmt.Errorf("no available pods found for %s %q", gvk.Kind, obj.GetName())
+	}
+
+	return reqs, nil
+}
+
+// ExecOptions controls how Exec runs a command inside a pod.
+type ExecOptions struct {
+	container string
+	retry     wait.Backoff
+	timeout   time.Duration
+}
+
+// ExecOptionFunc is a functional option for a single Exec call.
+type ExecOptionFunc func(*ExecOptions)
+
+// WithExecContainer restricts exec to the named container. When empty,
+// Kubernetes picks the first (or only) container in the pod.
+func WithExecContainer(container string) ExecOptionFunc {
+	return func(o *ExecOptions) {
+		o.container = container
+	}
+}
+
+// WithExecRetry sets the application-level retry for this Exec call.
+func WithExecRetry(attempts int, backoff time.Duration) ExecOptionFunc {
+	return func(o *ExecOptions) {
+		o.retry = retryBackoff(attempts, backoff)
+	}
+}
+
+// WithExecTimeout sets a hard deadline for the exec call. Zero values are ignored.
+func WithExecTimeout(timeout time.Duration) ExecOptionFunc {
+	return func(o *ExecOptions) {
+		if timeout > 0 {
+			o.timeout = timeout
+		}
+	}
+}
+
+// Exec runs command inside the resolved pod and succeeds when the command
+// exits with code zero. obj may be a Pod, Deployment, ReplicaSet, or
+// StatefulSet — workload types resolve to a single Running pod.
+func (s *Service) Exec(ctx context.Context, obj client.Object, command []string, opts ...ExecOptionFunc) error {
+	if obj == nil {
+		return interrors.ErrNilObject
+	}
+
+	if s.dryRun {
+		s.logger.Debug("dry run enabled, skipping exec")
+
+		return nil
+	}
+
+	if err := s.setNamespace(obj); err != nil {
+		return fmt.Errorf("set namespace for object '%s': %w", obj.GetName(), err)
+	}
+
+	execOpts := &ExecOptions{}
+
+	for _, opt := range opts {
+		opt(execOpts)
+	}
+
+	if execOpts.timeout > 0 {
+		var cancel context.CancelFunc
+
+		ctx, cancel = context.WithTimeout(ctx, execOpts.timeout)
+
+		defer cancel()
+	}
+
+	return retry.OnError(execOpts.retry, retryAlways, func() error {
+		podName, err := s.resolvePodForExec(ctx, obj)
+		if err != nil {
+			return fmt.Errorf("resolve pod for exec: %w", err)
+		}
+
+		req := s.clientset.CoreV1().RESTClient().Post().
+			Resource("pods").
+			Name(podName).
+			Namespace(obj.GetNamespace()).
+			SubResource("exec").
+			VersionedParams(&corev1.PodExecOptions{
+				Command:   command,
+				Container: execOpts.container,
+				Stdout:    true,
+				Stderr:    true,
+			}, clientgoscheme.ParameterCodec)
+
+		executor, err := remotecommand.NewWebSocketExecutor(s.restCfg, "POST", req.URL().String())
+		if err != nil {
+			return fmt.Errorf("create exec executor: %w", err)
+		}
+
+		if streamErr := executor.StreamWithContext(ctx, remotecommand.StreamOptions{}); streamErr != nil {
+			return fmt.Errorf("exec %v in pod %q: %w", command, podName, streamErr)
+		}
+
+		return nil
+	})
+}
+
+// resolvePodForExec returns the name of a single Running pod for obj.
+// Pods are resolved directly; Deployment, ReplicaSet, and StatefulSet are
+// resolved to the first Running pod via spec.selector.matchLabels.
+func (s *Service) resolvePodForExec(ctx context.Context, obj client.Object) (string, error) {
+	gvk := obj.GetObjectKind().GroupVersionKind()
+	ns := obj.GetNamespace()
+
+	if gvk.Kind == "Pod" {
+		return obj.GetName(), nil
+	}
+
+	switch gvk.Kind {
+	case "Deployment", "ReplicaSet", "StatefulSet":
+	default:
+		return "", fmt.Errorf("exec not supported for %s; use Pod, Deployment, ReplicaSet, or StatefulSet", gvk.Kind)
+	}
+
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(gvk)
+
+	if err := s.cli.Get(ctx, client.ObjectKeyFromObject(obj), live); err != nil {
+		return "", fmt.Errorf("get %s %q: %w", gvk.Kind, obj.GetName(), err)
+	}
+
+	matchLabels, found, err := unstructured.NestedStringMap(live.Object, "spec", "selector", "matchLabels")
+	if err != nil {
+		return "", fmt.Errorf("read spec.selector.matchLabels from %s %q: %w", gvk.Kind, obj.GetName(), err)
+	}
+
+	if !found || len(matchLabels) == 0 {
+		return "", fmt.Errorf("%s %q has no spec.selector.matchLabels", gvk.Kind, obj.GetName())
+	}
+
+	sel := labels.Set(matchLabels).String()
+
+	pods, err := s.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: sel})
+	if err != nil {
+		return "", fmt.Errorf("list pods for %s %q: %w", gvk.Kind, obj.GetName(), err)
+	}
+
+	for i := range pods.Items {
+		if pods.Items[i].Status.Phase == corev1.PodRunning {
+			return pods.Items[i].Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("no running pod found for %s %q", gvk.Kind, obj.GetName())
+}
+
 // GetVersion returns the Kubernetes API server GitVersion string (e.g., "v1.33.2").
 // It uses the discovery client built from the same rest.Config and HTTP client as the controller-runtime client.
 func (s *Service) GetVersion(_ context.Context) (string, error) {
@@ -656,9 +1046,9 @@ func (s *Service) GetVersion(_ context.Context) (string, error) {
 	return info.GitVersion, nil
 }
 
-// ClearApplied deletes every object that was added to the applied cache during
+// Cleanup deletes every object that was added to the applied cache during
 // the current test case and clears the cache entries as it goes.
-func (s *Service) ClearApplied(ctx context.Context) error {
+func (s *Service) Cleanup(ctx context.Context) error {
 	s.logger.Debug("clear applied resources")
 
 	if s.dryRun {

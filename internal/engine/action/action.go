@@ -11,7 +11,7 @@ import (
 // Target identifies the Kubernetes resource an action operates on.
 type Target struct {
 	// Object is the resource name — a key in the case-level Objects map.
-	Object string `yaml:"object" json:"object"`
+	Object string `yaml:"object" json:"object" validate:"required"`
 }
 
 // Retry configures retry behavior for an action.
@@ -25,7 +25,7 @@ type Retry struct {
 // The object name is taken directly from Object; no target nesting is needed.
 type Ensure struct {
 	// Object is the resource name — a key in the case-level Objects map.
-	Object  string           `yaml:"object" json:"object"`
+	Object  string           `yaml:"object" json:"object" validate:"required"`
 	Retry   *Retry           `yaml:"retry" json:"retry"`
 	Values  map[string]any   `yaml:"values" json:"values"`
 	Delay   *metav1.Duration `yaml:"delay" json:"delay"`
@@ -38,7 +38,6 @@ type Delete struct {
 	Retry    *Retry           `yaml:"retry" json:"retry"`
 	Wait     bool             `yaml:"wait" json:"wait"`
 	Interval *metav1.Duration `yaml:"interval" json:"interval"`
-	Timeout  *metav1.Duration `yaml:"timeout" json:"timeout"`
 }
 
 // Patch applies RFC 6902 JSON patches to the rendered object and re-ensures it.
@@ -51,8 +50,8 @@ type Patch struct {
 // Wait polls the object until all JQ conditions pass or the timeout expires.
 type Wait struct {
 	actionOptions
-	Interval   *metav1.Duration `yaml:"interval" json:"interval"`
-	Conditions []string         `yaml:"conditions" json:"conditions"`
+	Interval   *metav1.Duration `yaml:"interval"    json:"interval"`
+	Conditions []string         `yaml:"conditions"  json:"conditions"`
 }
 
 // Assert fetches the object once and checks that all JQ conditions evaluate to
@@ -60,12 +59,45 @@ type Wait struct {
 // Retry.Backoff between each attempt.
 type Assert struct {
 	actionOptions
-	Retry      *Retry   `yaml:"retry" json:"retry"`
-	Conditions []string `yaml:"conditions" json:"conditions"`
+	Retry      *Retry   `yaml:"retry"       json:"retry"`
+	Conditions []string `yaml:"conditions"  json:"conditions"  validate:"min=1"`
+}
+
+// LogsMatch controls how log contents are evaluated across pods.
+type LogsMatch string
+
+const (
+	// LogsMatchAny succeeds when at least one pod's logs contain the string (default).
+	LogsMatchAny LogsMatch = "any"
+	// LogsMatchAll succeeds when every pod's logs contain the string.
+	LogsMatchAll LogsMatch = "all"
+	// LogsMatchNone succeeds when no pod's logs contain the string.
+	LogsMatchNone LogsMatch = "none"
+)
+
+// Logs polls the logs of the named object until they contain Contains or the
+// timeout expires. The object may be a Pod, Deployment, ReplicaSet, or StatefulSet.
+// Does not support retry — use interval/timeout to tune polling.
+type Logs struct {
+	actionOptions
+	Contains  string           `yaml:"contains"   json:"contains"   validate:"required"`
+	Container string           `yaml:"container"  json:"container"`
+	Match     LogsMatch        `yaml:"match"      json:"match"`
+	Interval  *metav1.Duration `yaml:"interval"   json:"interval"`
+}
+
+// Exec runs command inside the resolved pod and succeeds when the command
+// exits with code zero. The object may be a Pod, Deployment, ReplicaSet, or
+// StatefulSet — workload types resolve to a single Running pod.
+type Exec struct {
+	actionOptions
+	Command   []string `yaml:"command"    json:"command"    validate:"min=1"`
+	Container string   `yaml:"container"  json:"container"`
+	Retry     *Retry   `yaml:"retry"      json:"retry"`
 }
 
 type actionOptions struct {
-	Target  Target           `yaml:"target" json:"target"`
+	Target  Target           `yaml:"target" json:"target" validate:"required"`
 	Delay   *metav1.Duration `yaml:"delay" json:"delay"`
 	Timeout *metav1.Duration `yaml:"timeout" json:"timeout"`
 }
@@ -86,6 +118,16 @@ func (r *Retry) backoff() time.Duration {
 	}
 
 	return r.Backoff.Duration
+}
+
+// IntervalOrDefault provides the log-poll interval or the supplied default when
+// the action does not specify one.
+func (a *Logs) IntervalOrDefault(def time.Duration) time.Duration {
+	if a.Interval == nil || a.Interval.Duration <= 0 {
+		return def
+	}
+
+	return a.Interval.Duration
 }
 
 // IntervalOrDefault provides the polling interval or the supplied default when

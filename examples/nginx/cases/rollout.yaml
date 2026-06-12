@@ -1,0 +1,45 @@
+version: v1
+name: rollout
+description: Deploy nginx and assert that all replicas become ready
+tags:
+  - smoke
+  - deployment
+  - wait
+namespace: kube2e-nginx
+
+objects:
+  nginx: deployment
+
+steps:
+  - name: deploy
+    ensure:
+      object: nginx
+      values:
+        replicas: 2
+    wait:
+      target:
+        object: nginx
+      timeout: 2m
+      conditions:
+        - .status.readyReplicas == .spec.replicas
+    assert:
+      target:
+        object: nginx
+      conditions:
+        - .status.readyReplicas == 2
+        - (.status.unavailableReplicas // 0) == 0
+    logs:
+      target:
+        object: nginx
+      container: app
+      contains: "start worker process"
+      match: any
+      timeout: 30s
+    exec:
+      target:
+        object: nginx
+      container: app
+      command:
+        - nginx
+        - -t
+      timeout: 10s

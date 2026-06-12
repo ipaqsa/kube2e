@@ -10,8 +10,15 @@
 *.dylib
 
 bin
+report.yaml
 .idea
+
+# AI stuff
+CLAUDE.md
+AGENTS.md
+.ai
 .claude
+.codex
 
 # Test binary, built with `go test -c`
 *.test

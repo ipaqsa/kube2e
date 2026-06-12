@@ -17,7 +17,7 @@ import (
 
 // NewRootCommand returns the root cobra command with all subcommands registered.
 // Persistent flags are bound to Viper so they can also be set via environment
-// variables: KUBE2E_KUBECONFIG, KUBE2E_VERBOSE.
+// variables: KUBE2E_KUBECONFIG, KUBE2E_VERBOSE, KUBE2E_LOG_FORMAT.
 func NewRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "kube2e",
@@ -26,8 +26,9 @@ func NewRootCommand() *cobra.Command {
 		Long: `kube2e discovers test suites in a directory and runs them against a live
 Kubernetes cluster using declarative YAML scenarios.
 
-Each test suite contains a test.yaml descriptor, Go templates, and case files
-that define ordered steps and actions (Ensure, Delete, Wait, Patch, Value).
+Each test suite is a directory with a cases/ subdirectory. Optional Go templates
+live in templates/. Cases define ordered steps with actions: ensure, patch, wait,
+assert, logs, exec, and delete.
 
 CRDs must be provisioned in the cluster before running tests.`,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
@@ -38,12 +39,15 @@ CRDs must be provisioned in the cluster before running tests.`,
 	// --kubeconfig: explicit path; falls back to $KUBECONFIG then ~/.kube/config.
 	cmd.PersistentFlags().String("kubeconfig", "", "Path to kubeconfig file ($KUBECONFIG or ~/.kube/config used when not set)")
 	// --verbose / -v: include Warn-level log records in output.
-	cmd.PersistentFlags().BoolP("verbose", "v", false, "Show warning-level log messages in addition to info and error")
+	cmd.PersistentFlags().BoolP("verbose", "v", false, "Show debug and warning log messages (default: info and error only)")
+	// --log-format: output format, "text" (default, colored) or "json".
+	cmd.PersistentFlags().String("log-format", "text", `Log output format: "text" (colored) or "json" (env: KUBE2E_LOG_FORMAT)`)
 
 	_ = viper.BindPFlag("kubeconfig", cmd.PersistentFlags().Lookup("kubeconfig")) //nolint:errcheck // not need to verify it
 	_ = viper.BindPFlag("verbose", cmd.PersistentFlags().Lookup("verbose"))       //nolint:errcheck // not need to verify it
+	_ = viper.BindPFlag("log-format", cmd.PersistentFlags().Lookup("log-format")) //nolint:errcheck // not need to verify it
 
-	// Environment variable prefix: KUBE2E_KUBECONFIG, KUBE2E_VERBOSE.
+	// Environment variable prefix: KUBE2E_KUBECONFIG, KUBE2E_VERBOSE, KUBE2E_LOG_FORMAT.
 	viper.SetEnvPrefix("KUBE2E")
 	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	viper.AutomaticEnv()

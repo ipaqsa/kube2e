@@ -1,0 +1,52 @@
+version: v1
+name: scale
+description: Scale the deployment up and back down, asserting replica counts at each step
+tags:
+  - deployment
+  - patch
+  - wait
+namespace: kube2e-nginx
+
+objects:
+  nginx: deployment
+
+steps:
+  - name: deploy
+    ensure:
+      object: nginx
+      values:
+        replicas: 1
+    wait:
+      target:
+        object: nginx
+      timeout: 2m
+      conditions:
+        - .status.readyReplicas == .spec.replicas
+    assert:
+      target:
+        object: nginx
+      conditions:
+        - .spec.replicas == 1
+        - .status.readyReplicas == 1
+
+  - name: scale-up
+    patch:
+      target:
+        object: nginx
+      patches:
+        - op: replace
+          path: /spec/replicas
+          value: 3
+    wait:
+      target:
+        object: nginx
+      timeout: 3m
+      conditions:
+        - (.status.readyReplicas // 0) == 3
+    assert:
+      target:
+        object: nginx
+      conditions:
+        - .spec.replicas == 3
+        - .status.readyReplicas == 3
+        - (.status.unavailableReplicas // 0) == 0

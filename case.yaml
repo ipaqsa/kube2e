@@ -1,5 +1,8 @@
 # case.yaml — one file per test case, placed inside the cases/ directory.
-# Every field except `name`, `objects`, and `steps` is optional.
+# Every field except `version`, `name`, and `steps` is required or noted below.
+
+# Required. Schema version — must be "v1". Rejected if missing or unrecognised.
+version: v1
 
 # Required. Human-readable identifier; shown in log output.
 name: my-case
@@ -8,11 +11,14 @@ name: my-case
 description: ""
 
 # Optional. Tags used to select this case via --tags.
-# When --tags is given and the parent test did not already match, the case is
-# skipped unless at least one of its tags matches the requested tags.
+# The case is skipped unless at least one of its tags matches the requested tags.
 tags:
   - smoke
   - aws
+
+# Optional. Kubernetes namespace to create before the case runs and delete after
+# cleanup. Objects without an explicit namespace inherit this value.
+namespace: my-namespace
 
 # Optional. Case-level object registry: maps a resource name to the template
 # base-filename (without .yaml) that renders it.
@@ -65,7 +71,7 @@ steps:
 
     # Each action field is optional. Absent (nil) fields are skipped.
     # Multiple actions may be set; they execute in a fixed order:
-    #   ensure → patch → wait → assert → delete
+    #   ensure → patch → wait → assert → logs → exec → delete
     # The first failure aborts the step (unless optional: true).
     # Every action embeds two optional timing fields:
     #   delay    duration  Sleep before executing (e.g. 500ms, 5s, 2m).
@@ -183,6 +189,71 @@ steps:
       retry:
         attempts: 5
         backoff: 2s
+
+      delay: 0s
+
+    # ── Logs ──────────────────────────────────────────────────────────────────
+    # Poll logs until the match condition is satisfied or the timeout expires.
+    # Supported kinds: Pod, Deployment, ReplicaSet, StatefulSet.
+    # Workload types resolve to their pods via spec.selector.matchLabels.
+    # Last 200 lines are fetched on every tick. Does not support retry.
+    # The action fails when zero Running pods are found.
+    logs:
+      target:
+        # Required. Key from the case-level objects map.
+        # Must be a Pod, Deployment, ReplicaSet, or StatefulSet.
+        object: my-resource
+
+      # Required. Substring to search for in each pod's log output.
+      contains: "expected output"
+
+      # Optional. Container name to stream logs from. When omitted, Kubernetes
+      # picks the first (or only) container in the pod.
+      container: my-container
+
+      # Optional. How pod log results are evaluated (default: any).
+      #   any  — succeed when at least one pod's logs contain the string.
+      #   all  — succeed when every pod's logs contain the string.
+      #   none — succeed when no pod's logs contain the string.
+      match: any
+
+      # Optional. How often to fetch and check logs (default: 2s).
+      interval: 2s
+
+      # Optional. Hard deadline after which Logs returns an error (default: 2m).
+      timeout: 2m
+
+      delay: 0s
+
+    # ── Exec ──────────────────────────────────────────────────────────────────
+    # Run a command inside the resolved pod and succeed when it exits with
+    # code zero. Supported kinds: Pod, Deployment, ReplicaSet, StatefulSet.
+    # Workload types resolve to a single Running pod via spec.selector.matchLabels.
+    # The action fails when zero Running pods are found.
+    exec:
+      target:
+        # Required. Key from the case-level objects map.
+        # Must be a Pod, Deployment, ReplicaSet, or StatefulSet.
+        object: my-resource
+
+      # Required. Command to execute, passed as a string slice (no shell wrapping).
+      # Use ["sh", "-c", "..."] to run shell expressions.
+      command:
+        - sh
+        - -c
+        - "echo hello"
+
+      # Optional. Container name to exec into. When omitted, Kubernetes picks
+      # the first (or only) container in the pod.
+      container: my-container
+
+      # Optional. Retry on non-zero exit or transient errors.
+      retry:
+        attempts: 3
+        backoff: 5s
+
+      # Optional. Hard deadline for the command (default: 30s).
+      timeout: 30s
 
       delay: 0s
 

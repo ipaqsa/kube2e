@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/ipaqsa/kube2e/internal/engine"
 	"github.com/ipaqsa/kube2e/internal/engine/action"
 	interrors "github.com/ipaqsa/kube2e/internal/errors"
 	svckube "github.com/ipaqsa/kube2e/internal/kube"
@@ -41,11 +43,17 @@ type Config struct {
 }
 
 // Run executes every configured action in the step against the cluster.
-// Actions execute in the order: Ensure → Patch → Wait → Assert → Delete.
-func Run(ctx context.Context, conf *Config) error {
+// Actions execute in the order: Ensure → Patch → Wait → Assert → Logs → Exec → Delete.
+func Run(ctx context.Context, conf *Config) (*Report, error) {
+	report := &Report{StartedAt: time.Now()}
 	if conf.Step == nil {
-		return interrors.ErrNilStep
+		return finishReport(report, interrors.ErrNilStep)
 	}
+
+	report.Name = conf.Step.Name
+	report.Description = conf.Step.Description
+	report.Optional = conf.Step.Optional
+	report.Total = conf.Step.CountActions()
 
 	svc := new(service)
 
@@ -62,47 +70,73 @@ func Run(ctx context.Context, conf *Config) error {
 
 	svc.logger = conf.Logger.With("step", conf.Step.Name)
 
-	return svc.run(ctx, conf.Step, conf.Objects)
+	actions, err := svc.run(ctx, conf.Step, conf.Objects)
+	report.Actions = actions
+	report.Passed, report.Failed = countActions(actions)
+
+	if err != nil && conf.Step.Optional {
+		svc.logger.Warn("optional step failed", "error", err)
+
+		report.FinishedAt = time.Now()
+		report.State = engine.StateSkipped
+		report.Reason = err.Error()
+
+		return report, nil
+	}
+
+	if err != nil {
+		err = fmt.Errorf("run step %q: %w", conf.Step.Name, err)
+	}
+
+	return finishReport(report, err)
 }
 
-func (s *service) run(ctx context.Context, st *Step, objects map[string]string) error {
+// run executes configured step actions in order until one fails.
+func (s *service) run(ctx context.Context, st *Step, objects map[string]string) ([]action.Report, error) {
 	if st == nil {
-		return interrors.ErrNilStep
+		return nil, interrors.ErrNilStep
 	}
 
 	var err error
 
+	reports := make([]action.Report, 0, st.CountActions())
+
 	if st.Ensure != nil {
-		err = s.runEnsure(ctx, st, objects)
+		report, runErr := s.runEnsure(ctx, st, objects)
+		err = appendActionReport(&reports, report, runErr)
 	}
 
 	if err == nil && st.Patch != nil {
-		err = s.runPatch(ctx, st, objects)
+		report, runErr := s.runPatch(ctx, st, objects)
+		err = appendActionReport(&reports, report, runErr)
 	}
 
 	if err == nil && st.Wait != nil {
-		err = s.runWait(ctx, st, objects)
+		report, runErr := s.runWait(ctx, st, objects)
+		err = appendActionReport(&reports, report, runErr)
 	}
 
 	if err == nil && st.Assert != nil {
-		err = s.runAssert(ctx, st, objects)
+		report, runErr := s.runAssert(ctx, st, objects)
+		err = appendActionReport(&reports, report, runErr)
+	}
+
+	if err == nil && st.Logs != nil {
+		report, runErr := s.runLogs(ctx, st, objects)
+		err = appendActionReport(&reports, report, runErr)
+	}
+
+	if err == nil && st.Exec != nil {
+		report, runErr := s.runExec(ctx, st, objects)
+		err = appendActionReport(&reports, report, runErr)
 	}
 
 	if err == nil && st.Delete != nil {
-		err = s.runDelete(ctx, st, objects)
+		report, runErr := s.runDelete(ctx, st, objects)
+		err = appendActionReport(&reports, report, runErr)
 	}
 
-	if err != nil {
-		if st.Optional {
-			s.logger.Warn("optional step failed", "error", err)
-
-			return nil
-		}
-
-		return fmt.Errorf("run step %q: %w", st.Name, err)
-	}
-
-	return nil
+	return reports, err
 }
 
 // actionConf builds the base action.Config for a rendered object.
@@ -131,66 +165,99 @@ func (s *service) render(objects map[string]string, name string, extra map[strin
 	return s.template.Render(tmplName, values)
 }
 
-func (s *service) runEnsure(ctx context.Context, st *Step, objects map[string]string) error {
+// runEnsure renders the ensure object and executes the ensure action.
+func (s *service) runEnsure(ctx context.Context, st *Step, objects map[string]string) (*action.Report, error) {
 	s.logger.Info("run action", "action", "ensure")
 
 	name := st.Ensure.Object
 
 	obj, err := s.render(objects, name, st.Ensure.Values)
 	if err != nil {
-		return fmt.Errorf("render object %q for ensure: %w", name, err)
+		return failedActionReport("ensure", action.Target{Object: name}, fmt.Errorf("render object %q for ensure: %w", name, err))
 	}
 
 	return action.RunEnsure(ctx, s.actionConf(obj), st.Ensure)
 }
 
-func (s *service) runPatch(ctx context.Context, st *Step, objects map[string]string) error {
+// runPatch renders the patch object and executes the patch action.
+func (s *service) runPatch(ctx context.Context, st *Step, objects map[string]string) (*action.Report, error) {
 	s.logger.Info("run action", "action", "patch")
 
 	name := st.Patch.Target.Object
 
 	obj, err := s.render(objects, name, nil)
 	if err != nil {
-		return fmt.Errorf("render object %q for patch: %w", name, err)
+		return failedActionReport("patch", st.Patch.Target, fmt.Errorf("render object %q for patch: %w", name, err))
 	}
 
 	return action.RunPatch(ctx, s.actionConf(obj), st.Patch)
 }
 
-func (s *service) runWait(ctx context.Context, st *Step, objects map[string]string) error {
+// runWait renders the wait object and executes the wait action.
+func (s *service) runWait(ctx context.Context, st *Step, objects map[string]string) (*action.Report, error) {
 	s.logger.Info("run action", "action", "wait")
 
 	name := st.Wait.Target.Object
 
 	obj, err := s.render(objects, name, nil)
 	if err != nil {
-		return fmt.Errorf("render object %q for wait: %w", name, err)
+		return failedActionReport("wait", st.Wait.Target, fmt.Errorf("render object %q for wait: %w", name, err))
 	}
 
 	return action.RunWait(ctx, s.actionConf(obj), st.Wait)
 }
 
-func (s *service) runAssert(ctx context.Context, st *Step, objects map[string]string) error {
+// runAssert renders the assert object and executes the assert action.
+func (s *service) runAssert(ctx context.Context, st *Step, objects map[string]string) (*action.Report, error) {
 	s.logger.Info("run action", "action", "assert")
 
 	name := st.Assert.Target.Object
 
 	obj, err := s.render(objects, name, nil)
 	if err != nil {
-		return fmt.Errorf("render object %q for assert: %w", name, err)
+		return failedActionReport("assert", st.Assert.Target, fmt.Errorf("render object %q for assert: %w", name, err))
 	}
 
 	return action.RunAssert(ctx, s.actionConf(obj), st.Assert)
 }
 
-func (s *service) runDelete(ctx context.Context, st *Step, objects map[string]string) error {
+// runLogs renders the logs object and executes the logs action.
+func (s *service) runLogs(ctx context.Context, st *Step, objects map[string]string) (*action.Report, error) {
+	s.logger.Info("run action", "action", "logs")
+
+	name := st.Logs.Target.Object
+
+	obj, err := s.render(objects, name, nil)
+	if err != nil {
+		return failedActionReport("logs", st.Logs.Target, fmt.Errorf("render object %q for logs: %w", name, err))
+	}
+
+	return action.RunLogs(ctx, s.actionConf(obj), st.Logs)
+}
+
+// runExec renders the exec object and executes the exec action.
+func (s *service) runExec(ctx context.Context, st *Step, objects map[string]string) (*action.Report, error) {
+	s.logger.Info("run action", "action", "exec")
+
+	name := st.Exec.Target.Object
+
+	obj, err := s.render(objects, name, nil)
+	if err != nil {
+		return failedActionReport("exec", st.Exec.Target, fmt.Errorf("render object %q for exec: %w", name, err))
+	}
+
+	return action.RunExec(ctx, s.actionConf(obj), st.Exec)
+}
+
+// runDelete renders the delete object and executes the delete action.
+func (s *service) runDelete(ctx context.Context, st *Step, objects map[string]string) (*action.Report, error) {
 	s.logger.Info("run action", "action", "delete")
 
 	name := st.Delete.Target.Object
 
 	obj, err := s.render(objects, name, nil)
 	if err != nil {
-		return fmt.Errorf("render object %q for delete: %w", name, err)
+		return failedActionReport("delete", st.Delete.Target, fmt.Errorf("render object %q for delete: %w", name, err))
 	}
 
 	return action.RunDelete(ctx, s.actionConf(obj), st.Delete)

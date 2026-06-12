@@ -1,0 +1,40 @@
+version: v1
+name: lifecycle
+description: Create a ConfigMap, verify its data, then bump the version via a patch
+tags:
+  - smoke
+  - configmap
+  - patch
+namespace: kube2e-configmap
+
+objects:
+  app-config: configmap
+
+steps:
+  - name: create
+    ensure:
+      object: app-config
+      values:
+        env: production
+        version: "1.0.0"
+    assert:
+      target:
+        object: app-config
+      conditions:
+        - .data.env == "production"
+        - .data.version == "1.0.0"
+
+  - name: bump-version
+    patch:
+      target:
+        object: app-config
+      patches:
+        - op: replace
+          path: /data/version
+          value: "2.0.0"
+    assert:
+      target:
+        object: app-config
+      conditions:
+        - .data.version == "2.0.0"
+        - .data.env == "production"

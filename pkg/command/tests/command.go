@@ -4,7 +4,7 @@ package tests
 import (
 	"github.com/spf13/cobra"
 
-	cmdbuild "github.com/ipaqsa/kube2e/pkg/command/tests/build"
+	cmdpublish "github.com/ipaqsa/kube2e/pkg/command/tests/publish"
 )
 
 // NewTestsCommand returns the "tests" command with suite management subcommands.
@@ -18,7 +18,7 @@ Use subcommands to package and publish test suites for remote execution.`,
 		Args: cobra.NoArgs,
 	}
 
-	cmd.AddCommand(cmdbuild.NewBuildCommand())
+	cmd.AddCommand(cmdpublish.NewPublishCommand())
 
 	return cmd
 }

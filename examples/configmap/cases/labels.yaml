@@ -1,0 +1,39 @@
+version: v1
+name: labels
+description: Add a metadata label to a ConfigMap and assert it is reflected on the live object
+tags:
+  - configmap
+  - patch
+  - labels
+namespace: kube2e-configmap
+
+objects:
+  app-config: configmap
+
+steps:
+  - name: create
+    ensure:
+      object: app-config
+      values:
+        env: staging
+        version: "1.0.0"
+    assert:
+      target:
+        object: app-config
+      conditions:
+        - .data.env == "staging"
+
+  - name: add-label
+    patch:
+      target:
+        object: app-config
+      patches:
+        - op: add
+          path: /metadata/labels/tier
+          value: config
+    assert:
+      target:
+        object: app-config
+      conditions:
+        - .metadata.labels.tier == "config"
+        - .data.env == "staging"

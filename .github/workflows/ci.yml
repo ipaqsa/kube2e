@@ -54,6 +54,8 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -63,6 +65,39 @@ jobs:
 
       - name: Run tests
         run: go test -race -count=1 ./...
+
+      - name: Collect coverage
+        run: go test -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Update coverage badge
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+
+          coverage=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/, "", $3); print $3}')
+          color=$(awk -v c="$coverage" 'BEGIN {
+            if (c >= 80) print "brightgreen"
+            else if (c >= 60) print "yellow"
+            else if (c >= 40) print "orange"
+            else print "red"
+          }')
+
+          mkdir -p .github/badges
+          printf '{\n  "schemaVersion": 1,\n  "label": "coverage",\n  "message": "%s%%",\n  "color": "%s"\n}\n' "$coverage" "$color" > .github/badges/coverage.json
+
+          if git diff --quiet -- .github/badges/coverage.json; then
+            echo "Coverage badge is already up to date."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/coverage.json
+          git commit -s -m "chore: update coverage badge [skip ci]"
+          git push
+
+      - name: Run go vet
+        run: go vet ./...
 
   lint:
     name: Lint
@@ -91,3 +126,36 @@ jobs:
 
       - name: Build binary
         run: CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/kube2e
+
+  examples:
+    name: Validate examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Dry-run example suites
+        run: go run ./cmd/kube2e run ./examples --dry-run
+
+      - name: Dry-run tagged examples
+        run: go run ./cmd/kube2e run ./examples --dry-run --tags smoke
+
+  govulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+          repo-checkout: false

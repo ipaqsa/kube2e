@@ -2,8 +2,9 @@
 package run
 
 import (
+	"errors"
 	"fmt"
-	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,8 +12,8 @@ import (
 	"github.com/spf13/viper"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/yaml"
 
-	"github.com/ipaqsa/kube2e/internal/image"
 	"github.com/ipaqsa/kube2e/internal/tools/logs"
 	"github.com/ipaqsa/kube2e/pkg/engine"
 )
@@ -30,6 +31,8 @@ const (
 	remotePasswordFlag = "remote-password"
 	// dryRunFlag specifies whether to run in dry run mode (no resources are applied).
 	dryRunFlag = "dry-run"
+	// reportFileFlag specifies where to write the YAML execution report.
+	reportFileFlag = "report-file"
 )
 
 // NewRunCommand returns the "run" cobra command that executes local or remote test suites.
@@ -40,27 +43,31 @@ func NewRunCommand() *cobra.Command {
 		Long: `Walk a local directory or extracted image filesystem for test suites and
 run each one against the configured cluster.
 
-Every immediate subdirectory that contains a test.yaml file is treated as a
-test suite. Use --tags to run only suites and cases that carry matching tags.
+Every immediate subdirectory that contains a cases/ directory is treated as a
+test suite named after that directory. Use --tags to run only cases that carry
+matching tags.
 
 Kubeconfig resolution: --kubeconfig flag -> $KUBECONFIG -> ~/.kube/config -> in-cluster.`,
-		Example: `  # Run all test suites in ./examples/tests
-  kube2e run ./examples/tests
+		Example: `  # Run all test suites in ./examples
+  kube2e run ./examples
 
   # Run only tests and cases tagged "smoke" or "aws"
-  kube2e run ./examples/tests --tags smoke,aws
+  kube2e run ./examples --tags smoke,aws
 
   # Run 4 test suites in parallel
-  kube2e run ./examples/tests -n 4
+  kube2e run ./examples -n 4
 
   # Run in dry run mode
-  kube2e run ./examples/tests --dry-run
+  kube2e run ./examples --dry-run
+
+  # Save a YAML execution report
+  kube2e run ./examples --report-file report.yaml
 
   # Run remote tests from an image
   kube2e run ./tests --remote ghcr.io/tests/example:v0.0.1
 
   # Run tagged tests against an explicit cluster
-  kube2e run ./examples/tests --tags smoke --kubeconfig ~/.kube/staging.yaml`,
+  kube2e run ./examples --tags smoke --kubeconfig ~/.kube/staging.yaml`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE:         run,
@@ -90,6 +97,10 @@ Kubeconfig resolution: --kubeconfig flag -> $KUBECONFIG -> ~/.kube/config -> in-
 	cmd.Flags().Bool(dryRunFlag, false, "Run in dry run mode")
 	_ = viper.BindPFlag(dryRunFlag, cmd.Flags().Lookup(dryRunFlag)) //nolint:errcheck // not need to verify it
 
+	// --report-file: path where the YAML report should be written.
+	cmd.Flags().String(reportFileFlag, "", "Write a YAML execution report to this path")
+	_ = viper.BindPFlag(reportFileFlag, cmd.Flags().Lookup(reportFileFlag)) //nolint:errcheck // not need to verify it
+
 	return cmd
 }
 
@@ -105,53 +116,62 @@ func run(cmd *cobra.Command, args []string) error {
 
 	tags := splitTags(viper.GetString(tagsFlag))
 	parallel := viper.GetInt(parallelFlag)
+	reportFile := viper.GetString(reportFileFlag)
 
 	dryRun := viper.GetBool(dryRunFlag)
 
 	var restConfig *rest.Config
+
 	if !dryRun {
 		var err error
+
 		restConfig, err = buildRestConfig(kubeconfig)
 		if err != nil {
 			return fmt.Errorf("build rest config: %w", err)
 		}
 	}
 
-	logger := logs.New(verbose)
+	logger := logs.New(
+		logs.WithVerbose(verbose),
+		logs.WithFormat(logs.Format(viper.GetString("log-format"))),
+	)
 	cfg := &engine.Config{
 		RestConfig: restConfig,
 		WorkDir:    workDir,
 		Tags:       tags,
 		Parallel:   parallel,
-		DryRun:     dryRun,
-	}
-
-	if remote != "" {
-		r := image.Remote{
+		Remote: engine.Remote{
 			Ref:      remote,
 			Username: remoteUser,
 			Password: remotePassword,
-		}
-
-		return runRemote(cmd, cfg, r, logger)
+		},
+		DryRun: dryRun,
 	}
 
-	return engine.RunTests(cmd.Context(), cfg, logger)
+	report, runErr := engine.RunTests(cmd.Context(), cfg, logger)
+
+	if reportFile != "" {
+		if writeErr := writeReport(reportFile, report); writeErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("write report file: %w", writeErr))
+		}
+	}
+
+	return runErr
 }
 
-// runRemote extracts tests from r and runs the engine against the extracted directory.
-func runRemote(cmd *cobra.Command, cfg *engine.Config, r image.Remote, logger *slog.Logger) error {
-	logger.Info("pull tests image", "image", r.Ref)
-
-	tester := func(dir string) error {
-		next := *cfg
-		next.WorkDir = filepath.Join(dir, cfg.WorkDir)
-
-		return engine.RunTests(cmd.Context(), &next, logger)
+// writeReport writes report to path in YAML format.
+func writeReport(path string, report *engine.Report) error {
+	content, err := yaml.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("marshal report: %w", err)
 	}
 
-	if err := image.Traverse(cmd.Context(), r, tester); err != nil {
-		return fmt.Errorf("traverse image: %w", err)
+	if err = os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("create report dir: %w", err)
+	}
+
+	if err = os.WriteFile(path, content, 0o600); err != nil {
+		return fmt.Errorf("write report: %w", err)
 	}
 
 	return nil

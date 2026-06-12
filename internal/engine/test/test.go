@@ -1,68 +1,34 @@
-// Package test orchestrates top-level test execution including namespace lifecycle.
+// Package test orchestrates top-level test execution.
 package test
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"sigs.k8s.io/yaml"
-
-	"github.com/ipaqsa/kube2e/internal/errors"
 )
 
 const (
-	testFile = "test.yaml"
-
 	casesDir     = "cases"
 	templatesDir = "templates"
 
 	testAnnotation = "testing.kube2e.io/test"
 )
 
-// Test groups multiple cases into one scenario. CRDs must be provisioned by the
-// caller before the test runs — kube2e does not manage CRD lifecycle.
+// Test represents a single test suite derived from a directory.
+// The suite name equals the directory's base name; no descriptor file is required.
 type Test struct {
-	// Path is the filesystem path to the test directory (set after parsing).
-	Path string `yaml:"path" json:"path"`
-
-	// Name is a required human-readable identifier for the test suite.
-	Name        string `yaml:"name" json:"name"`
-	Description string `yaml:"description" json:"description"`
-
-	// Namespace is the default Kubernetes namespace for all objects in the test.
-	Namespace string `yaml:"namespace" json:"namespace"`
-
-	// Tags are arbitrary labels used for filtering via --tags. When --tags is
-	// given and the test has non-empty tags, the test is skipped unless at least
-	// one tag matches. When the test matches, all its cases run regardless of
-	// case-level tags.
-	Tags []string `yaml:"tags" json:"tags"`
+	// Path is the filesystem path to the test directory.
+	Path string
+	// Name is the test suite name, derived from the directory base name.
+	Name string
 }
 
-// parseTestFile loads the test descriptor from the provided directory.
-func parseTestFile(testDir string) (*Test, error) {
-	content, err := os.ReadFile(filepath.Join(testDir, testFile)) //nolint:gosec // path comes from trusted test configuration, not user input
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-
-		return nil, fmt.Errorf("read test file: %w", err)
+// newTest constructs a Test from the given directory path.
+func newTest(dir string) *Test {
+	return &Test{
+		Path: dir,
+		Name: filepath.Base(dir),
 	}
-
-	test := new(Test)
-	if err = yaml.Unmarshal(content, test); err != nil {
-		return nil, fmt.Errorf("unmarshal test file: %w", err)
-	}
-
-	if test.Name == "" {
-		return nil, errors.ErrTestNoName
-	}
-
-	test.Path = testDir
-
-	return test, nil
 }
 
 // CasesDir returns the directory containing individual test case YAML files.
@@ -71,13 +37,14 @@ func (t *Test) CasesDir() string {
 }
 
 // TemplatesDir returns the directory containing Go templates used by steps.
+// The directory is optional; its absence is not an error.
 func (t *Test) TemplatesDir() string {
 	return filepath.Join(t.Path, templatesDir)
 }
 
-// forEach iterates over case YAML files in CasesDir and invokes f for each one.
-func (t *Test) forEach(f func(casePath string) error) error {
-	cases, err := os.ReadDir(t.CasesDir())
+// forEach iterates over case YAML files in CasesDir in alphabetical filename order.
+func (t *Test) forEach(f func(total, idx int, casePath string) error) error {
+	entries, err := os.ReadDir(t.CasesDir())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -86,12 +53,14 @@ func (t *Test) forEach(f func(casePath string) error) error {
 		return fmt.Errorf("read the cases dir '%s': %w", t.CasesDir(), err)
 	}
 
-	for _, testCase := range cases {
-		if testCase.IsDir() || filepath.Ext(testCase.Name()) != ".yaml" {
+	for idx, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
 			continue
 		}
 
-		if err = f(filepath.Join(t.CasesDir(), testCase.Name())); err != nil {
+		path := filepath.Join(t.CasesDir(), entry.Name())
+
+		if err = f(len(entries), idx+1, path); err != nil {
 			return err
 		}
 	}

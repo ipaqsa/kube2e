@@ -20,8 +20,10 @@ import (
 )
 
 const (
-	// testFileName is the descriptor file that marks a directory as a test suite.
-	testFileName = "test.yaml"
+	// casesDirName is the subdirectory whose presence marks a directory as a test suite.
+	casesDirName = "cases"
+	// templatesDirName is the subdirectory containing Kubernetes manifest templates.
+	templatesDirName = "templates"
 )
 
 // Build packages test directories from path into an image and pushes it to r.
@@ -61,7 +63,7 @@ func Build(ctx context.Context, r Remote, path string, logger *slog.Logger) erro
 	return nil
 }
 
-// findTestDirs returns immediate child directories that contain test.yaml.
+// findTestDirs returns immediate child directories that contain a cases/ subdirectory.
 func findTestDirs(path string) ([]string, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -76,13 +78,13 @@ func findTestDirs(path string) ([]string, error) {
 
 		dir := filepath.Join(path, entry.Name())
 
-		testFile := filepath.Join(dir, testFileName)
-		if _, err = os.Stat(testFile); err != nil {
+		casesDir := filepath.Join(dir, casesDirName)
+		if _, err = os.Stat(casesDir); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
 
-			return nil, fmt.Errorf("stat test file '%s': %w", testFile, err)
+			return nil, fmt.Errorf("stat cases dir '%s': %w", casesDir, err)
 		}
 
 		dirs = append(dirs, dir)
@@ -141,6 +143,19 @@ func addDirToTar(tw *tar.Writer, root, dir string) error {
 			return fmt.Errorf("walk '%s': %w", path, err)
 		}
 
+		include, err := includeLayerEntry(dir, path, entry)
+		if err != nil {
+			return err
+		}
+
+		if !include {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+
 		info, err := entry.Info()
 		if err != nil {
 			return fmt.Errorf("stat '%s': %w", path, err)
@@ -179,6 +194,52 @@ func addDirToTar(tw *tar.Writer, root, dir string) error {
 
 		return nil
 	})
+}
+
+// includeLayerEntry reports whether path should be included in the tests image layer.
+func includeLayerEntry(dir, path string, entry os.DirEntry) (bool, error) {
+	if path == dir {
+		return true, nil
+	}
+
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false, fmt.Errorf("build relative path '%s': %w", path, err)
+	}
+
+	base := firstPathPart(rel)
+	if base != casesDirName && base != templatesDirName {
+		return false, nil
+	}
+
+	if rel == base {
+		return entry.IsDir(), nil
+	}
+
+	if entry.IsDir() {
+		return false, nil
+	}
+
+	return entry.Type().IsRegular() && filepath.Dir(rel) == base && isYAMLPath(path), nil
+}
+
+// firstPathPart returns the first path segment in rel.
+func firstPathPart(rel string) string {
+	if i := strings.IndexRune(rel, filepath.Separator); i >= 0 {
+		return rel[:i]
+	}
+
+	return rel
+}
+
+// isYAMLPath reports whether path has a YAML file extension.
+func isYAMLPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".yaml", ".yml":
+		return true
+	default:
+		return false
+	}
 }
 
 // writeTarFile streams path into tw.

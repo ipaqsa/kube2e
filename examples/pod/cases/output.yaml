@@ -1,0 +1,30 @@
+version: v1
+name: output
+description: Run a one-shot pod and assert its log output contains the expected string
+tags:
+  - smoke
+  - pod
+  - logs
+namespace: kube2e-pod
+
+objects:
+  runner: pod
+
+steps:
+  - name: run-and-check
+    ensure:
+      object: runner
+      values:
+        command: "echo 'hello from kube2e'"
+    wait:
+      target:
+        object: runner
+      timeout: 1m
+      conditions:
+        - .status.phase == "Succeeded"
+    logs:
+      target:
+        object: runner
+      container: runner
+      contains: "hello from kube2e"
+      timeout: 30s
