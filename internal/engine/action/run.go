@@ -37,7 +37,9 @@ func RunEnsure(ctx context.Context, conf *Config, act *Ensure) (*Report, error) 
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "ensure", "name", conf.Object.GetName(), "gvk", gvk)
 
-	applyDelay(log, act.Delay)
+	if err := applyDelay(ctx, log, act.Delay); err != nil {
+		return finishReport(report, err)
+	}
 
 	log.Info("ensure object")
 
@@ -58,7 +60,9 @@ func RunDelete(ctx context.Context, conf *Config, act *Delete) (*Report, error) 
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "delete", "name", conf.Object.GetName(), "gvk", gvk)
 
-	applyDelay(log, act.Delay)
+	if err := applyDelay(ctx, log, act.Delay); err != nil {
+		return finishReport(report, err)
+	}
 
 	log.Info("delete object")
 
@@ -79,7 +83,9 @@ func RunWait(ctx context.Context, conf *Config, act *Wait) (*Report, error) {
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "wait", "name", conf.Object.GetName(), "gvk", gvk)
 
-	applyDelay(log, act.Delay)
+	if err := applyDelay(ctx, log, act.Delay); err != nil {
+		return finishReport(report, err)
+	}
 
 	log.Info("wait for conditions")
 
@@ -100,7 +106,9 @@ func RunPatch(ctx context.Context, conf *Config, act *Patch) (*Report, error) {
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "patch", "name", conf.Object.GetName(), "gvk", gvk)
 
-	applyDelay(log, act.Delay)
+	if err := applyDelay(ctx, log, act.Delay); err != nil {
+		return finishReport(report, err)
+	}
 
 	if len(act.Patches) == 0 {
 		return finishReport(report, nil)
@@ -133,7 +141,9 @@ func RunAssert(ctx context.Context, conf *Config, act *Assert) (*Report, error) 
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "assert", "name", conf.Object.GetName(), "gvk", gvk)
 
-	applyDelay(log, act.Delay)
+	if err := applyDelay(ctx, log, act.Delay); err != nil {
+		return finishReport(report, err)
+	}
 
 	log.Info("assert conditions")
 
@@ -152,7 +162,9 @@ func RunLogs(ctx context.Context, conf *Config, act *Logs) (*Report, error) {
 	report := newReport("logs", act.Target)
 	log := conf.Logger.With("action", "logs", "name", conf.Object.GetName())
 
-	applyDelay(log, act.Delay)
+	if err := applyDelay(ctx, log, act.Delay); err != nil {
+		return finishReport(report, err)
+	}
 
 	log.Info("wait for log output", "contains", act.Contains)
 
@@ -174,7 +186,9 @@ func RunExec(ctx context.Context, conf *Config, act *Exec) (*Report, error) {
 	report := newReport("exec", act.Target)
 	log := conf.Logger.With("action", "exec", "name", conf.Object.GetName())
 
-	applyDelay(log, act.Delay)
+	if err := applyDelay(ctx, log, act.Delay); err != nil {
+		return finishReport(report, err)
+	}
 
 	log.Info("exec command", "command", act.Command)
 
@@ -189,12 +203,22 @@ func RunExec(ctx context.Context, conf *Config, act *Exec) (*Report, error) {
 	return finishReport(report, err)
 }
 
-// applyDelay sleeps for the configured duration if set.
-func applyDelay(log *slog.Logger, delay *metav1.Duration) {
+// applyDelay waits for the configured duration if set, returning early with
+// the context error if the context is canceled before the delay elapses.
+func applyDelay(ctx context.Context, log *slog.Logger, delay *metav1.Duration) error {
 	if delay == nil || delay.Duration <= 0 {
-		return
+		return nil
 	}
 
 	log.Info("action delay", "duration", delay.Duration)
-	time.Sleep(delay.Duration)
+
+	timer := time.NewTimer(delay.Duration)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

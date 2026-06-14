@@ -51,9 +51,11 @@ type Config struct {
 
 // Run loads a case file, creates a scoped kube service, and executes its steps.
 func Run(ctx context.Context, conf *Config) (*Report, error) {
+	startedAt := time.Now()
+
 	report := &Report{
 		Path:      conf.Path,
-		StartedAt: time.Now(),
+		StartedAt: startedAt,
 	}
 
 	testCase, err := parseCaseFile(conf.Path)
@@ -62,6 +64,7 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 	}
 
 	report = newReport(testCase)
+	report.StartedAt = startedAt
 
 	// Case-level tag filter: skip if tags requested but none of the case's tags match.
 	if len(conf.Tags) > 0 && !anyTagMatches(testCase.Tags, conf.Tags) {
@@ -133,14 +136,17 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 	runReport, err := svc.run(ctx, testCase)
 	if runReport != nil {
 		report = runReport
+		report.StartedAt = startedAt
 	}
 
 	return finishReport(report, err)
 }
 
 // run iterates through the case steps using the provided services.
-func (s *service) run(ctx context.Context, testCase *Case) (*Report, error) {
-	report := newReport(testCase)
+// Applied resources are cleaned up on every exit path, including step failure,
+// so a failing case does not leak objects into subsequent cases.
+func (s *service) run(ctx context.Context, testCase *Case) (report *Report, err error) {
+	report = newReport(testCase)
 	if testCase == nil {
 		return finishReport(report, interrors.ErrNilTestCase)
 	}
@@ -151,8 +157,16 @@ func (s *service) run(ctx context.Context, testCase *Case) (*Report, error) {
 		return report, nil
 	}
 
+	defer func() {
+		s.logger.Debug("cleanup")
+
+		if cleanupErr := s.kube.Cleanup(ctx); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("cleanup applied resources: %w", cleanupErr))
+		}
+	}()
+
 	for idx, caseStep := range testCase.Steps {
-		stepReport, hooksReport, err := s.runStepWithHooks(ctx, len(testCase.Steps), idx+1, testCase, caseStep)
+		stepReport, hooksReport, stepErr := s.runStepWithHooks(ctx, len(testCase.Steps), idx+1, testCase, caseStep)
 		appendHooksReport(report, hooksReport)
 
 		if stepReport != nil {
@@ -161,14 +175,12 @@ func (s *service) run(ctx context.Context, testCase *Case) (*Report, error) {
 
 		report.Passed, report.Failed = countSteps(report.Steps)
 
-		if err != nil {
-			return report, err
+		if stepErr != nil {
+			return report, stepErr
 		}
 	}
 
-	s.logger.Debug("cleanup")
-
-	return report, s.kube.Cleanup(ctx)
+	return report, nil
 }
 
 // runStepWithHooks executes caseStep with case-level before and after hooks.

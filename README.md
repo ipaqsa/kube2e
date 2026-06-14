@@ -621,10 +621,16 @@ pkg/command/          Cobra commands and flag wiring
 pkg/engine/           Public RunTests entry point
 internal/engine/      Test execution engine (test → case → step → action)
 internal/template/    Go template loading and rendering
-internal/kube/        Kubernetes client (SSA, Wait, Filter)
+internal/kube/        Kubernetes client (SSA, Wait, Logs, Exec)
+internal/image/       OCI image build and pull
 internal/tools/       filter, logs, patch, safe, workerpool
 internal/errors/      Sentinel errors
 internal/version/     Build-time version info
+examples/             Working test suites (run with --dry-run, no cluster needed)
+  configmap/          ensure, assert, patch
+  nginx/              wait, assert, logs, exec (Deployment)
+  job/                beforeEach/afterEach hooks
+  pod/                logs match policies, exec (Pod)
 ```
 
 ## Contributing 🤝

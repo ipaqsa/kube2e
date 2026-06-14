@@ -42,9 +42,10 @@ func countActions(reports []action.Report) (int, int) {
 		switch report.State {
 		case engine.StatePassed:
 			passed++
-		case engine.StateSkipped:
 		case engine.StateFailed:
 			failed++
+		case engine.StateSkipped:
+			// Actions are only ever passed or failed; counted as neither.
 		}
 	}
 

@@ -51,11 +51,6 @@ type Remote struct {
 // When cfg.Tags is non-empty, only matching tests and cases are executed.
 // When cfg.Parallel > 1, suites run concurrently (cases within a suite remain sequential).
 func RunTests(ctx context.Context, cfg *Config, logger *slog.Logger) (*Report, error) {
-	return runTests(ctx, cfg, logger)
-}
-
-// runTests executes either local or remote tests based on cfg.
-func runTests(ctx context.Context, cfg *Config, logger *slog.Logger) (*Report, error) {
 	if cfg.Remote.Ref != "" {
 		return runRemote(ctx, cfg, logger)
 	}
