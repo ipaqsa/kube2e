@@ -19,6 +19,24 @@ local, CI, staging, or production.
 kube2e validates resources and workflows against an existing cluster.
 CRDs and operators are expected to be installed before test execution.
 
+## Table of contents
+
+- [Why kube2e?](#why-kube2e)
+- [Quickstart](#quickstart-)
+- [Minimal example](#minimal-example-)
+- [When to use kube2e](#when-to-use-kube2e-)
+- [When not to use kube2e](#when-not-to-use-kube2e-)
+- [Install](#install-)
+- [Building](#building)
+- [Usage](#usage)
+- [Directory structure](#directory-structure)
+- [Documentation](#documentation)
+- [Examples](#examples-)
+- [Project structure](#project-structure)
+- [Contributing](#contributing-)
+- [Security](#security-)
+- [License](#license)
+
 ## Why kube2e?
 
 **OCI-native test distribution** is the core advantage. Test suites are regular
@@ -323,281 +341,24 @@ Cases execute in alphabetical filename order. All resources applied during a
 case are deleted once it finishes, along with the case's namespace if one was
 specified.
 
-## Reference
+See [Test suites & case files](docs/suites.md) for the full case file contract.
 
-### Case file (`cases/<name>.yaml`)
+## Documentation
 
-```yaml
-version: v1              # required — must match the supported schema version
-name: <string>           # required — shown in log output
-description: <string>
-tags:                    # optional — filter with --tags
-  - <string>
-namespace: <string>      # optional — created before the case, deleted after cleanup
-objects:                 # resource name → template base-filename (without .yaml)
-  <name>: <template>     # the key is injected as the Kubernetes object name
-hooks:
-  beforeEach:
-    - <step>             # executed before each item in steps
-  afterEach:
-    - <step>             # executed after each item in steps; runs even on step failure
-steps:
-  - <step>
-```
+Reference documentation for authoring suites lives in [`docs/`](docs/):
 
-The `objects` map is the single place where you bind a resource name to its
-template. Steps reference entries by key; the key is used as the Kubernetes
-`metadata.name` in every render — you never put `name` in step values.
+- [Test suites & case files](docs/suites.md) — suite layout, the case file
+  contract, hooks, and `objects` binding
+- [Steps](docs/steps.md) — step structure, the fixed action order, and the
+  `delay`, `retry`, and `optional` fields
+- [Actions](docs/actions.md) — `ensure`, `patch`, `wait`, `assert`, `logs`,
+  `exec`, and `delete`
+- [Templates](docs/templates.md) — Go templates, Sprig helpers, and automatic
+  name injection
+- [Server-Side Apply & cleanup](docs/server-side-apply.md) — field manager,
+  conflicts, and per-case resource cleanup
 
-`hooks.beforeEach` and `hooks.afterEach` are optional case-level step lists.
-They use the same schema as normal steps and run before or after every step in
-`steps`. After hooks run even when a before hook or the main step fails.
-
-### Step
-
-Each step runs one or more typed actions. Set any combination; absent fields
-are skipped. Actions execute in a fixed order:
-**ensure → patch → wait → assert → logs → exec → delete**,
-and the first failure aborts the step (unless `optional: true`).
-
-```yaml
-name: <string>           # required — shown in log output
-description: <string>
-optional: <bool>         # when true, failures are warned and skipped
-ensure:                  # optional — create or update the object
-  object: <string>       # required (flat, no target nesting)
-  ...
-patch:                   # optional — apply JSON patches then re-ensure
-  target:
-    object: <string>     # required
-  ...
-wait:                    # optional — poll until conditions pass
-  target:
-    object: <string>     # required
-  ...
-assert:                  # optional — one-shot condition check
-  target:
-    object: <string>     # required
-  ...
-logs:                    # optional — poll logs until output contains a string
-  target:
-    object: <string>     # required — Pod, Deployment, ReplicaSet, or StatefulSet
-  ...
-exec:                    # optional — run a command inside a pod
-  target:
-    object: <string>     # required — Pod, Deployment, ReplicaSet, or StatefulSet
-  ...
-delete:                  # optional — remove the object
-  target:
-    object: <string>     # required
-  ...
-```
-
-Every action also accepts an optional `delay: <duration>` field that sleeps
-before execution. Every action except `wait` and `logs` accepts an optional `retry` block:
-
-```yaml
-retry:
-  attempts: <int>         # total executions (1 = no retry)
-  backoff: <duration>     # sleep between attempts (e.g. 5s)
-```
-
-### Actions
-
-#### `ensure`
-
-Create or update the object using Server-Side Apply (field manager `kube2e`).
-Requires Kubernetes v1.22+. The object is cached for automatic cleanup.
-
-```yaml
-ensure:
-  object: <string>     # required — key in the case objects map (flat, no target)
-  values:              # template render inputs; name is injected automatically
-    <key>: <value>
-  retry:
-    attempts: <int>
-    backoff: <duration>
-```
-
-#### `patch`
-
-Apply RFC 6902 JSON Patch operations to the rendered object, then re-ensure it.
-
-```yaml
-patch:
-  target:
-    object: <string>   # required — key in the case objects map
-  patches:
-    - op: add            # add | replace | remove | move | copy | test
-      path: /metadata/labels/env
-      value: production
-    - op: replace
-      path: /spec/replicas
-      value: 3
-    - op: remove
-      path: /metadata/annotations/tmp
-    - op: move
-      from: /data/src
-      path: /data/dst
-  retry:
-    attempts: <int>
-    backoff: <duration>
-```
-
-#### `wait`
-
-Poll the live object until all JQ conditions return `true`, or until the
-timeout expires. Does not support retry (use `assert` for one-shot checks).
-
-```yaml
-wait:
-  target:
-    object: <string>   # required — key in the case objects map
-  conditions:
-    - <jq expression>    # must evaluate to boolean — all must pass
-  interval: <duration>   # poll interval  (default: 2s)
-  timeout: <duration>    # hard deadline  (default: 2m)
-```
-
-**Condition examples**
-
-```yaml
-# Deployment fully rolled out
-- .status.readyReplicas == .spec.replicas
-
-# Pod ready
-- any(.status.conditions[]?; .type=="Ready" and .status=="True")
-
-# Job completed
-- (.status.succeeded // 0) >= 1
-
-# Custom condition True
-- any(.status.conditions[]?; .type=="Available" and .status=="True")
-```
-
-#### `assert`
-
-Fetch the object once and check that all JQ conditions are true. Unlike `wait`,
-there is no poll loop — use `retry` for repeated checks with backoff.
-
-```yaml
-assert:
-  target:
-    object: <string>   # required — key in the case objects map
-  conditions:
-    - <jq expression>
-  retry:
-    attempts: <int>
-    backoff: <duration>
-```
-
-#### `logs`
-
-Poll object logs until they contain the expected string, or until the timeout
-expires. Does not support retry — tune `interval` and `timeout` instead.
-
-Supported object kinds: **Pod**, **Deployment**, **ReplicaSet**, **StatefulSet**.
-For workload types, a running pod is resolved via `spec.selector.matchLabels` on
-each poll tick; if no pod is ready yet, the tick is silently skipped.
-
-```yaml
-logs:
-  target:
-    object: <string>    # required — key in the case objects map
-  contains: <string>    # required — substring to search for in the log output
-  container: <string>   # optional — container name; omit for single-container pods
-  match: <any|all|none> # optional — match policy across pods (default: any)
-  interval: <duration>  # poll interval  (default: 2s)
-  timeout: <duration>   # hard deadline  (default: 2m)
-```
-
-Fresh logs (last 200 lines) are streamed on every tick. Transient errors (pod
-not yet scheduled, container still initializing) are retried silently.
-
-**Match policies:**
-- `any` (default) — succeed when at least one pod's logs contain the string
-- `all` — succeed when every pod's logs contain the string
-- `none` — succeed when no pod's logs contain the string
-
-Returns `ErrLogsNotContain` when the timeout elapses without the condition being met.
-
-#### `exec`
-
-Run a command inside the resolved pod. Succeeds when the command exits with
-code zero; any non-zero exit or transport error is treated as a failure (and
-retried if `retry` is configured).
-
-Supported object kinds: **Pod**, **Deployment**, **ReplicaSet**, **StatefulSet**.
-For workload types, the first Running pod is resolved via
-`spec.selector.matchLabels`.
-
-```yaml
-exec:
-  target:
-    object: <string>     # required — key in the case objects map
-  command:               # required — passed directly to the container; no shell wrapping
-    - sh
-    - -c
-    - "nginx -t"
-  container: <string>    # optional — container name; omit for single-container pods
-  retry:
-    attempts: <int>
-    backoff: <duration>
-  timeout: <duration>    # hard deadline for the command (default: 30s)
-```
-
-Use `["sh", "-c", "..."]` to run shell expressions. stdout and stderr are
-captured and emitted at debug level.
-
-#### `delete`
-
-Remove the object. Not-found responses are treated as success. Set `wait: true`
-to block until the object disappears from the cluster.
-
-```yaml
-delete:
-  target:
-    object: <string>   # required — key in the case objects map
-  wait: <bool>           # block until object is gone (default: false)
-  interval: <duration>   # poll interval for the post-delete wait  (default: 2s)
-  timeout: <duration>    # hard deadline for the post-delete wait  (default: 2m)
-  retry:
-    attempts: <int>
-    backoff: <duration>
-```
-
-### Template system
-
-Templates are Go templates with [Sprig](https://masterminds.github.io/sprig/)
-helper functions. They are loaded from `templates/` at suite start and rendered
-per step with the values defined in the case file. The `templates/` directory
-is optional — cases that need no rendered objects can omit it entirely.
-
-The object name is injected automatically from the `objects` map key — never
-put `name` in step values. Use Sprig's `default` for every optional spec field
-so templates render safely when only the name is provided (e.g. for Wait or
-Delete steps that carry no values).
-
-```yaml
-# templates/deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ .name }}
-spec:
-  replicas: {{ .replicas | default 1 }}
-  selector:
-    matchLabels:
-      app: {{ .name }}
-  template:
-    metadata:
-      labels:
-        app: {{ .name }}
-    spec:
-      containers:
-        - name: app
-          image: {{ .image | default "nginx:1.25-alpine" }}
-```
+The full annotated case file is [`case.yaml`](case.yaml).
 
 ## Examples 🧪
 
@@ -609,9 +370,6 @@ See [`examples/`](examples/) for four working suites:
 | `nginx`     | `rollout`, `scale`         | ensure, wait, assert replicas, logs (Deployment), exec (config check), patch + scale | `smoke`, `deployment`, `wait` |
 | `job`       | `complete`, `report`       | beforeEach / afterEach hooks, multi-step cases    | `smoke`, `job`, `hooks`, `cleanup`  |
 | `pod`       | `output`, `silent`, `probe` | logs `match: any`, logs `match: none`, exec into a running pod | `smoke`, `pod`, `logs`, `exec` |
-
-The full case file template with every field documented is
-[`case.yaml`](case.yaml).
 
 ## Project structure
 
