@@ -22,6 +22,10 @@ import (
 	"github.com/ipaqsa/kube2e/internal/tools/safe"
 )
 
+// cleanupTimeout bounds applied-resource teardown when it runs on a detached
+// context (for example after the run context was canceled by an interrupt).
+const cleanupTimeout = 30 * time.Second
+
 type service struct {
 	kube        *svckube.Service
 	template    *template.Manager
@@ -150,7 +154,12 @@ func (s *service) run(ctx context.Context, testCase *Case) (report *Report, err 
 	defer func() {
 		s.logger.Debug("cleanup")
 
-		if cleanupErr := s.kube.Cleanup(ctx); cleanupErr != nil {
+		// Detach from ctx so teardown still deletes applied resources even when the
+		// run was canceled (an interrupt leaves ctx already Done).
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+		defer cancel()
+
+		if cleanupErr := s.kube.Cleanup(cleanupCtx); cleanupErr != nil {
 			err = errors.Join(err, fmt.Errorf("cleanup applied resources: %w", cleanupErr))
 		}
 	}()
