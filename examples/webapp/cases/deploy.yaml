@@ -1,0 +1,83 @@
+version: v1
+name: deploy
+description: |
+  A realistic multi-object case: a ConfigMap, a Deployment that consumes it via
+  envFrom, and a Service. Demonstrates the objects map with several entries, one
+  object referencing another, match: all log checks, both selector forms, and a
+  retried assertion.
+tags:
+  - smoke
+  - webapp
+  - deployment
+  - service
+
+namespace: kube2e-webapp
+
+# Each key binds a resource name to a template in templates/ (without .yaml).
+objects:
+  config: configmap
+  web: deployment
+  svc: service
+
+steps:
+  - name: create-config
+    ensure:
+      object: config
+      values:
+        greeting: "hello from kube2e"
+
+  - name: deploy-web
+    ensure:
+      object: web
+      values:
+        replicas: 2
+        # Point the Deployment at the ConfigMap created above.
+        configName: config
+    wait:
+      target:
+        object: web
+      timeout: 2m
+      conditions:
+        - .status.readyReplicas == .spec.replicas
+
+  - name: expose-service
+    ensure:
+      object: svc
+      values:
+        selectorApp: web
+    assert:
+      target:
+        object: svc
+      # The cluster assigns spec.clusterIP asynchronously; retry until it lands.
+      retry:
+        attempts: 5
+        backoff: 2s
+      conditions:
+        - (.spec.clusterIP // "") != ""
+        - any(.spec.ports[]?; .port == 80)
+
+  - name: verify-all-pods
+    # kind + labelSelector resolves the Deployment to its pods; match: all
+    # requires every pod's logs to contain the string.
+    logs:
+      target:
+        kind: Deployment
+        labelSelector: app=web
+      container: app
+      contains: "start worker process"
+      match: all
+      timeout: 30s
+
+  - name: verify-config-injected
+    # Select a pod directly by label and confirm the ConfigMap value reached the
+    # container as an environment variable.
+    exec:
+      target:
+        kind: Pod
+        labelSelector: app=web
+      container: app
+      command:
+        - sh
+        - -c
+        - test "$GREETING" = "hello from kube2e"
+      timeout: 10s

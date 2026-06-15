@@ -192,9 +192,22 @@ run them.
 
 ### Prebuilt binary
 
-Download the binary for your platform from the
-[GitHub Releases page](https://github.com/ipaqsa/kube2e/releases) and place it on
-your `PATH`.
+Download the binary for your platform from the latest release. Builds are
+published for `linux-amd64`, `linux-arm64`, and `darwin-arm64`, each with its own
+`.sha256` checksum:
+
+```bash
+# Choose your platform: linux-amd64, linux-arm64, or darwin-arm64
+PLATFORM=linux-amd64
+BASE=https://github.com/ipaqsa/kube2e/releases/latest/download
+
+curl -fsSL -O "$BASE/kube2e-$PLATFORM"
+curl -fsSL -O "$BASE/kube2e-$PLATFORM.sha256"
+sha256sum -c "kube2e-$PLATFORM.sha256"        # macOS: shasum -a 256 -c
+
+chmod +x "kube2e-$PLATFORM"
+sudo mv "kube2e-$PLATFORM" /usr/local/bin/kube2e
+```
 
 ### From source
 
@@ -265,6 +278,42 @@ Docker credential keychain is used.
 The `--report-file` report contains aggregate totals and nested test, case, step,
 hook, and action results with their state and failure reason. For remote runs it
 records the image reference and registry username, but never the password.
+
+### Run with Docker
+
+The published image holds only the `kube2e` binary (entrypoint `kube2e`), so the
+suites and kubeconfig must be mounted in. Validate suites without a cluster:
+
+```bash
+docker run --rm \
+  -v "$PWD/examples:/work:ro" \
+  ghcr.io/ipaqsa/kube2e:latest run /work --dry-run
+```
+
+Run against a cluster by also mounting your kubeconfig and pointing `--kubeconfig`
+at it:
+
+```bash
+docker run --rm \
+  -v "$PWD/examples:/work:ro" \
+  -v "$HOME/.kube/config:/kubeconfig:ro" \
+  ghcr.io/ipaqsa/kube2e:latest run /work --kubeconfig /kubeconfig
+```
+
+To run suites packaged in an image, no mount is needed — point `--remote` at the
+suite image and use `.` for its root:
+
+```bash
+docker run --rm \
+  -v "$HOME/.kube/config:/kubeconfig:ro" \
+  ghcr.io/ipaqsa/kube2e:latest \
+  run . --remote ghcr.io/example/kube2e-tests:v0.1.0 --kubeconfig /kubeconfig
+```
+
+> **Networking:** the container must reach the cluster's API server. For a
+> cluster whose kubeconfig points at `127.0.0.1` (kind, minikube, Docker
+> Desktop), add `--network host` (Linux) or rewrite the server address to
+> `host.docker.internal`.
 
 ### Scaffold a new suite
 
@@ -367,12 +416,13 @@ The [`examples/`](examples/) directory contains four runnable suites. All
 validate with `--dry-run` (no cluster required) and run end-to-end against a
 cluster.
 
-| Suite       | Cases                       | Demonstrates                                                        |
-|-------------|-----------------------------|--------------------------------------------------------------------|
-| `configmap` | `labels`, `lifecycle`       | `ensure`, `assert`, and `patch` on a ConfigMap                     |
-| `job`       | `complete`, `report`        | `beforeEach` / `afterEach` hooks and multi-step cases              |
+| Suite       | Cases                          | Demonstrates                                                        |
+|-------------|--------------------------------|--------------------------------------------------------------------|
+| `configmap` | `labels`, `lifecycle`, `patch-ops` | `ensure`, `assert`, and the full set of RFC 6902 `patch` operations |
+| `job`       | `complete`, `report`           | `beforeEach` / `afterEach` hooks, `optional` steps, multi-step cases |
 | `nginx`     | `rollout`, `scale`, `selector` | rollout `wait`, replica `patch`, and `logs` / `exec` by object or label selector |
-| `pod`       | `output`, `probe`, `silent` | `logs` match policies (`any` / `none`) and `exec` into a Pod       |
+| `pod`       | `output`, `probe`, `silent`    | `logs` match policies (`any` / `none`), `exec`, and `delete` with wait |
+| `webapp`    | `deploy`                       | a multi-object app (ConfigMap + Deployment + Service): `match: all` logs, both selector forms, and a retried `assert` |
 
 ## Project structure
 

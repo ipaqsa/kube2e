@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name }}
+  labels:
+    app: {{ .name }}
+spec:
+  replicas: {{ .replicas | default 2 }}
+  selector:
+    matchLabels:
+      app: {{ .name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .name }}
+    spec:
+      containers:
+        - name: app
+          image: {{ .image | default "nginx:1.25-alpine" }}
+          # Inject every key of the ConfigMap as an environment variable.
+          envFrom:
+            - configMapRef:
+                name: {{ .configName | default "config" }}
+          ports:
+            - containerPort: 80

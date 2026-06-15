@@ -52,3 +52,39 @@ jobs:
             VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  binaries:
+    name: Build and Attach Binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        env:
+          TAG: ${{ github.ref_name }}
+        run: make build-all VERSION="$TAG"
+
+      - name: Generate checksums
+        working-directory: bin
+        run: |
+          for bin in kube2e-linux-amd64 kube2e-linux-arm64 kube2e-darwin-arm64; do
+            sha256sum "$bin" > "$bin.sha256"
+          done
+
+      # Upload assets to the existing release for this tag. Notes are never
+      # touched; a minimal release is created only as a fallback when the tag was
+      # pushed without one.
+      - name: Attach binaries to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "Release $TAG"
+          gh release upload "$TAG" bin/kube2e-* --clobber

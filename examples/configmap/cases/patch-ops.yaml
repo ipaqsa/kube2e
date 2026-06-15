@@ -1,0 +1,55 @@
+version: v1
+name: patch-ops
+description: |
+  Demonstrate the full set of RFC 6902 patch operations (add, copy, move, test,
+  remove) applied to the live object in a single patch action.
+tags:
+  - configmap
+  - patch
+
+namespace: kube2e-configmap
+
+objects:
+  app-config: configmap
+
+steps:
+  - name: seed
+    ensure:
+      object: app-config
+      values:
+        env: staging
+        version: "1.0.0"
+
+  - name: apply-patch-ops
+    patch:
+      target:
+        object: app-config
+      patches:
+        # add — insert a new key.
+        - op: add
+          path: /data/region
+          value: eu-west-1
+        # copy — duplicate an existing value to a new key.
+        - op: copy
+          from: /data/env
+          path: /data/env-copy
+        # move — rename version to revision.
+        - op: move
+          from: /data/version
+          path: /data/revision
+        # test — guard: aborts the whole patch if the value does not match.
+        - op: test
+          path: /data/revision
+          value: "1.0.0"
+        # remove — delete the original key.
+        - op: remove
+          path: /data/env
+    assert:
+      target:
+        object: app-config
+      conditions:
+        - .data.region == "eu-west-1"
+        - .data["env-copy"] == "staging"
+        - .data.revision == "1.0.0"
+        - (.data.env // null) == null
+        - (.data.version // null) == null
