@@ -35,6 +35,10 @@ func Filter(ctx context.Context, obj *unstructured.Unstructured, exp string) (st
 		return "", err
 	}
 
+	if res == nil {
+		return "null", nil
+	}
+
 	return fmt.Sprintf("%v", res), nil
 }
 
@@ -51,11 +55,9 @@ func exec(ctx context.Context, obj *unstructured.Unstructured, exp string) (any,
 
 	res, ok := query.RunWithContext(ctx, val).Next()
 	if !ok {
+		// No output at all (e.g. an empty stream); distinct from a JSON null
+		// result, which gojq yields as (nil, true) and is a valid value.
 		return false, nil
-	}
-
-	if res == nil {
-		return false, errors.New("no result")
 	}
 
 	if err, ok = res.(error); ok {

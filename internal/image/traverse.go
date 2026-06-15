@@ -97,33 +97,87 @@ func extract(img crv1.Image, dir string) error {
 			continue
 		}
 
-		target := filepath.Join(dir, filepath.Clean("/"+hdr.Name))
-		// Zip-slip guard: resolved path must stay inside dir.
-		if !strings.HasPrefix(target+string(os.PathSeparator), root) {
-			continue
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err = os.MkdirAll(target, 0o750); err != nil {
-				return fmt.Errorf("mkdir '%s': %w", target, err)
-			}
-		case tar.TypeReg:
-			if err = os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-				return fmt.Errorf("mkdir parent '%s': %w", target, err)
-			}
-
-			if err = writeFile(target, tr, hdr.FileInfo().Mode()); err != nil {
-				return fmt.Errorf("write '%s': %w", target, err)
-			}
-		case tar.TypeSymlink:
-			if err = os.Symlink(hdr.Linkname, target); err != nil && !os.IsExist(err) {
-				return fmt.Errorf("symlink '%s': %w", target, err)
-			}
+		if err = extractEntry(root, dir, hdr, tr); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// extractEntry writes a single tar entry into dir, skipping entries whose
+// resolved path (or, for symlinks, link target) would escape the extraction
+// root.
+func extractEntry(root, dir string, hdr *tar.Header, tr io.Reader) error {
+	target := filepath.Join(dir, filepath.Clean("/"+hdr.Name))
+	// Zip-slip guard: resolved path must stay inside dir.
+	if !withinRoot(root, target) {
+		return nil
+	}
+
+	switch hdr.Typeflag {
+	case tar.TypeDir:
+		if err := os.MkdirAll(target, 0o750); err != nil {
+			return fmt.Errorf("mkdir '%s': %w", target, err)
+		}
+	case tar.TypeReg:
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			return fmt.Errorf("mkdir parent '%s': %w", target, err)
+		}
+
+		// Defense against tar-slip through a symlinked parent: the real,
+		// symlink-resolved parent must still live inside the extraction root.
+		if !realParentWithinRoot(root, target) {
+			return nil
+		}
+
+		if err := writeFile(target, tr, hdr.FileInfo().Mode()); err != nil {
+			return fmt.Errorf("write '%s': %w", target, err)
+		}
+	case tar.TypeSymlink:
+		// Reject links whose resolved target escapes the extraction root,
+		// so a later entry cannot be written through them to the host FS.
+		if !symlinkWithinRoot(root, dir, target, hdr.Linkname) {
+			return nil
+		}
+
+		if err := os.Symlink(hdr.Linkname, target); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("symlink '%s': %w", target, err)
+		}
+	}
+
+	return nil
+}
+
+// withinRoot reports whether path stays inside root (root must end with a
+// trailing separator).
+func withinRoot(root, path string) bool {
+	return strings.HasPrefix(filepath.Clean(path)+string(os.PathSeparator), root)
+}
+
+// realParentWithinRoot resolves any symlinks in target's parent directory and
+// reports whether the resolved parent is still inside root.
+func realParentWithinRoot(root, target string) bool {
+	realPath, err := filepath.EvalSymlinks(filepath.Dir(target))
+	if err != nil {
+		return false
+	}
+
+	return withinRoot(root, realPath)
+}
+
+// symlinkWithinRoot reports whether a symlink at target pointing to linkname
+// resolves to a location inside root. Absolute targets are resolved relative to
+// the extraction dir; relative targets relative to the link's own directory.
+func symlinkWithinRoot(root, dir, target, linkname string) bool {
+	var resolved string
+	if filepath.IsAbs(linkname) {
+		resolved = filepath.Join(dir, filepath.Clean("/"+linkname))
+	} else {
+		resolved = filepath.Join(filepath.Dir(target), linkname)
+	}
+
+	return withinRoot(root, resolved)
 }
 
 // writeFile creates a file at path and streams content from r into it.

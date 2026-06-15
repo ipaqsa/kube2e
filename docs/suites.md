@@ -17,8 +17,9 @@ suite descriptor file.
 
 Templates are optional and shared across all cases in the same suite. Cases
 execute in **alphabetical filename order**. All resources applied during a case
-are deleted once it finishes, along with the case's namespace if one was
-specified.
+are deleted once it finishes. The case's `namespace`, if one was specified, is
+created when absent but **never deleted** — kube2e will not remove a namespace it
+may not own (e.g. a pre-existing user namespace).
 
 ## Case file contract
 
@@ -38,7 +39,7 @@ name: <string>           # required — shown in log output
 description: <string>
 tags:                    # optional — filter with --tags
   - <string>
-namespace: <string>      # optional — created before the case, deleted after cleanup
+namespace: <string>      # optional — created before the case if absent; never deleted by kube2e
 objects:                 # resource name → template base-filename (without .yaml)
   <name>: <template>     # the key is injected as the Kubernetes object name
 hooks:

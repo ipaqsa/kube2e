@@ -221,32 +221,45 @@ func (s *service) runAssert(ctx context.Context, st *Step, objects map[string]st
 	return action.RunAssert(ctx, s.actionConf(obj), st.Assert)
 }
 
-// runLogs renders the logs object and executes the logs action.
+// runLogs renders the logs object (when the target names one) and executes the
+// logs action. A kind + label-selector target needs no rendered object.
 func (s *service) runLogs(ctx context.Context, st *Step, objects map[string]string) (*action.Report, error) {
 	s.logger.Info("run action", "action", "logs")
 
-	name := st.Logs.Target.Object
-
-	obj, err := s.render(objects, name, nil)
+	conf, err := s.targetConf(st.Logs.Target, objects)
 	if err != nil {
-		return failedActionReport("logs", st.Logs.Target, fmt.Errorf("render object %q for logs: %w", name, err))
+		return failedActionReport("logs", st.Logs.Target, err)
 	}
 
-	return action.RunLogs(ctx, s.actionConf(obj), st.Logs)
+	return action.RunLogs(ctx, conf, st.Logs)
 }
 
-// runExec renders the exec object and executes the exec action.
+// runExec renders the exec object (when the target names one) and executes the
+// exec action. A kind + label-selector target needs no rendered object.
 func (s *service) runExec(ctx context.Context, st *Step, objects map[string]string) (*action.Report, error) {
 	s.logger.Info("run action", "action", "exec")
 
-	name := st.Exec.Target.Object
-
-	obj, err := s.render(objects, name, nil)
+	conf, err := s.targetConf(st.Exec.Target, objects)
 	if err != nil {
-		return failedActionReport("exec", st.Exec.Target, fmt.Errorf("render object %q for exec: %w", name, err))
+		return failedActionReport("exec", st.Exec.Target, err)
 	}
 
-	return action.RunExec(ctx, s.actionConf(obj), st.Exec)
+	return action.RunExec(ctx, conf, st.Exec)
+}
+
+// targetConf builds an action config for an Exec/Logs target: it renders the
+// named object, or returns a config with no object for a kind + selector target.
+func (s *service) targetConf(t action.Target, objects map[string]string) (*action.Config, error) {
+	if t.Object == "" {
+		return s.actionConf(nil), nil
+	}
+
+	obj, err := s.render(objects, t.Object, nil)
+	if err != nil {
+		return nil, fmt.Errorf("render object %q: %w", t.Object, err)
+	}
+
+	return s.actionConf(obj), nil
 }
 
 // runDelete renders the delete object and executes the delete action.

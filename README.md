@@ -72,6 +72,8 @@ Beyond image distribution:
 - Render Kubernetes objects with Go templates and Sprig helpers.
 - Exercise real cluster behavior with `ensure`, `patch`, `wait`, `assert`,
   `logs`, `exec`, and `delete` actions.
+- Target pods for `logs` and `exec` by templated object or by `kind` +
+  `labelSelector` (handy for resources created outside the suite).
 - Use Server-Side Apply with deterministic per-case cleanup.
 - Filter cases with tags and run suites in parallel.
 - Validate suites with `--dry-run` before touching a cluster.
@@ -292,6 +294,34 @@ discover suites from the image root. Private registries can be accessed with
 `--remote-user` and `--remote-password`; when the username is omitted, kube2e
 uses the default Docker credential keychain.
 
+### Scaffold a new suite
+
+```bash
+kube2e tests add <name> [flags]
+```
+
+| Flag           | Default | Description                              |
+|----------------|---------|------------------------------------------|
+| `-C, --dir`    | `.`     | Parent directory to create the suite in  |
+
+Creates `<name>/cases/` and `<name>/templates/` with a starter ConfigMap
+template and a starter case. The case's optional fields (tags, namespace,
+patch/wait/logs/exec/delete actions, hooks, retry, delay, timeout) are written
+as comments — uncomment the ones you need. The uncommented fields form a
+minimal, runnable case.
+
+```bash
+# Create ./nginx with a starter case and template
+kube2e tests add nginx
+
+# Create the suite under ./examples
+kube2e tests add nginx --dir ./examples
+
+# Validate the scaffolded suite without touching a cluster.
+# Pass the parent directory that contains the suite, not the suite itself.
+kube2e run . --dry-run
+```
+
 ### Publish a tests image
 
 ```bash
@@ -338,8 +368,10 @@ kube2e run . --remote ghcr.io/example/kube2e-tests:v0.1.0
 No suite descriptor file is required. The suite name is taken from the directory
 name. Templates are optional and shared across all cases in the same suite.
 Cases execute in alphabetical filename order. All resources applied during a
-case are deleted once it finishes, along with the case's namespace if one was
-specified.
+case are deleted once it finishes. The case's `namespace`, if one was specified,
+is created when absent but **never deleted** — kube2e will not remove a namespace
+it may not own (e.g. a pre-existing user namespace). Clean it up yourself if
+needed.
 
 See [Test suites & case files](docs/suites.md) for the full case file contract.
 

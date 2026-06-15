@@ -1,0 +1,46 @@
+version: v1
+name: selector
+description: Target nginx pods by label selector (kind + labelSelector) instead of a templated object
+tags:
+  - deployment
+  - logs
+  - exec
+  - selector
+namespace: kube2e-nginx
+
+objects:
+  nginx: deployment
+
+steps:
+  - name: deploy
+    ensure:
+      object: nginx
+      values:
+        replicas: 1
+    wait:
+      target:
+        object: nginx
+      timeout: 2m
+      conditions:
+        - .status.readyReplicas == .spec.replicas
+
+  - name: inspect-by-label
+    # No templated object — select the running pods directly by label.
+    # Useful for pods created outside the suite (operators, Helm, etc.).
+    logs:
+      target:
+        kind: Pod
+        labelSelector: app=nginx
+      container: app
+      contains: "start worker process"
+      match: any
+      timeout: 30s
+    exec:
+      target:
+        kind: Pod
+        labelSelector: app=nginx
+      container: app
+      command:
+        - nginx
+        - -t
+      timeout: 10s

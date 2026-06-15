@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	jsonpatch "github.com/evanphx/json-patch/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -100,7 +99,7 @@ func RunWait(ctx context.Context, conf *Config, act *Wait) (*Report, error) {
 	return finishReport(report, err)
 }
 
-// RunPatch applies RFC 6902 JSON patches to the rendered object and re-ensures it.
+// RunPatch applies RFC 6902 JSON patches to the live object on the cluster.
 func RunPatch(ctx context.Context, conf *Config, act *Patch) (*Report, error) {
 	report := newReport("patch", act.Target)
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
@@ -119,16 +118,8 @@ func RunPatch(ctx context.Context, conf *Config, act *Patch) (*Report, error) {
 	start := time.Now()
 	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	opts := jsonpatch.NewApplyOptions()
-	opts.EnsurePathExistsOnAdd = true
-
-	patched, err := act.Patches.Apply(conf.Object, opts)
-	if err != nil {
-		return finishReport(report, fmt.Errorf("apply patch to object '%s': %w", conf.Object.GetName(), err))
-	}
-
-	err = conf.Kube.Ensure(ctx, patched,
-		svckube.WithEnsureRetry(act.Retry.attempts(), act.Retry.backoff()))
+	err := conf.Kube.Patch(ctx, conf.Object, act.Patches,
+		svckube.WithPatchRetry(act.Retry.attempts(), act.Retry.backoff()))
 
 	return finishReport(report, err)
 }
@@ -160,7 +151,7 @@ func RunAssert(ctx context.Context, conf *Config, act *Assert) (*Report, error) 
 // the timeout expires.
 func RunLogs(ctx context.Context, conf *Config, act *Logs) (*Report, error) {
 	report := newReport("logs", act.Target)
-	log := conf.Logger.With("action", "logs", "name", conf.Object.GetName())
+	log := conf.Logger.With("action", "logs", "target", targetName(conf, act.Target))
 
 	if err := applyDelay(ctx, log, act.Delay); err != nil {
 		return finishReport(report, err)
@@ -171,7 +162,7 @@ func RunLogs(ctx context.Context, conf *Config, act *Logs) (*Report, error) {
 	start := time.Now()
 	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	err := conf.Kube.LogsContains(ctx, conf.Object, act.Contains,
+	err := conf.Kube.LogsContains(ctx, podTarget(conf, act.Target), act.Contains,
 		svckube.WithLogsContainer(act.Container),
 		svckube.WithLogsMatch(svckube.LogsMatch(act.Match)),
 		svckube.WithLogsInterval(act.IntervalOrDefault(defaultWaitInterval)),
@@ -184,7 +175,7 @@ func RunLogs(ctx context.Context, conf *Config, act *Logs) (*Report, error) {
 // command exits with code zero.
 func RunExec(ctx context.Context, conf *Config, act *Exec) (*Report, error) {
 	report := newReport("exec", act.Target)
-	log := conf.Logger.With("action", "exec", "name", conf.Object.GetName())
+	log := conf.Logger.With("action", "exec", "target", targetName(conf, act.Target))
 
 	if err := applyDelay(ctx, log, act.Delay); err != nil {
 		return finishReport(report, err)
@@ -195,12 +186,32 @@ func RunExec(ctx context.Context, conf *Config, act *Exec) (*Report, error) {
 	start := time.Now()
 	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	err := conf.Kube.Exec(ctx, conf.Object, act.Command,
+	err := conf.Kube.Exec(ctx, podTarget(conf, act.Target), act.Command,
 		svckube.WithExecContainer(act.Container),
 		svckube.WithExecRetry(act.Retry.attempts(), act.Retry.backoff()),
 		svckube.WithExecTimeout(act.TimeoutOrDefault(defaultExecTimeout)))
 
 	return finishReport(report, err)
+}
+
+// podTarget builds a kube.PodTarget from the action target: a rendered object
+// when the target names one, otherwise the kind + label selector.
+func podTarget(conf *Config, t Target) svckube.PodTarget {
+	if t.Object != "" {
+		return svckube.PodTarget{Object: conf.Object}
+	}
+
+	return svckube.PodTarget{Kind: t.Kind, LabelSelector: t.LabelSelector}
+}
+
+// targetName is a short identifier for logs that works for both object and
+// selector targets (conf.Object is nil for selector targets).
+func targetName(conf *Config, t Target) string {
+	if t.Object != "" && conf.Object != nil {
+		return conf.Object.GetName()
+	}
+
+	return fmt.Sprintf("%s[%s]", t.Kind, t.LabelSelector)
 }
 
 // applyDelay waits for the configured duration if set, returning early with

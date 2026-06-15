@@ -7,6 +7,29 @@ import (
 	"github.com/ipaqsa/kube2e/internal/engine/step"
 )
 
+// skippedStepReport builds a skipped report for a main step that did not run
+// because a before-each hook failed. Emitting it keeps the per-case step list
+// and counts consistent with report.Total (which counts every declared step).
+func skippedStepReport(st *step.Step, reason string) *step.Report {
+	now := time.Now()
+
+	report := &step.Report{
+		StartedAt:  now,
+		FinishedAt: now,
+		State:      engine.StateSkipped,
+		Reason:     reason,
+	}
+
+	if st != nil {
+		report.Name = st.Name
+		report.Description = st.Description
+		report.Optional = st.Optional
+		report.Total = st.CountActions()
+	}
+
+	return report
+}
+
 // Report records the execution result of a case file and its steps.
 type Report struct {
 	Version     string            `json:"version"`

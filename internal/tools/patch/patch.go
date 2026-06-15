@@ -18,10 +18,12 @@ type Patches []Patch
 
 // Patch represents a single RFC 6902 JSON Patch operation.
 type Patch struct {
-	Op    string `json:"op"              yaml:"op"`
-	Path  string `json:"path"            yaml:"path"`
-	From  string `json:"from,omitempty"  yaml:"from,omitempty"`
-	Value any    `json:"value,omitempty" yaml:"value,omitempty"`
+	Op   string `json:"op"             yaml:"op"`
+	Path string `json:"path"           yaml:"path"`
+	From string `json:"from,omitempty" yaml:"from,omitempty"`
+	// Value has no omitempty: a patch with value false, 0 or "" must still
+	// serialize the field, or add/replace/test ops fail with "missing value".
+	Value any `json:"value" yaml:"value"`
 }
 
 // Apply serializes obj to JSON, applies all patches with the given opts, and

@@ -3,7 +3,9 @@
 package kube
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	jsonpatch "github.com/evanphx/json-patch/v5"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
@@ -34,6 +38,7 @@ import (
 
 	interrors "github.com/ipaqsa/kube2e/internal/errors"
 	"github.com/ipaqsa/kube2e/internal/tools/filter"
+	"github.com/ipaqsa/kube2e/internal/tools/patch"
 	"github.com/ipaqsa/kube2e/internal/tools/safe"
 )
 
@@ -147,10 +152,11 @@ func New(cfg *rest.Config, logger *slog.Logger, opts ...Option) (*Service, error
 var retryAlways = func(_ error) bool { return true }
 
 // retryBackoff builds a constant-interval wait.Backoff for user-configured retry.
-// attempts is the total number of calls; attempts < 2 disables retry (Steps = 0).
+// attempts is the total number of calls; Steps must be >= 1 or retry.OnError
+// never invokes the function and silently returns nil.
 func retryBackoff(attempts int, backoff time.Duration) wait.Backoff {
 	return wait.Backoff{
-		Steps:    max(attempts-1, 0),
+		Steps:    max(attempts, 1),
 		Duration: backoff,
 		Factor:   1.0,
 	}
@@ -167,6 +173,7 @@ func newEnsureOptions() *EnsureOptions {
 	return &EnsureOptions{
 		Annotations: make(map[string]string),
 		ToCache:     true,
+		Retry:       retryBackoff(1, 0),
 	}
 }
 
@@ -248,36 +255,126 @@ func (s *Service) Ensure(ctx context.Context, obj client.Object, opts ...EnsureO
 					return fmt.Errorf("to apply configuration: %w", err)
 				}
 
+				// Probe existence so we only cache newly-created objects (so
+				// Cleanup never tries to delete a resource we did not create).
 				tmp := obj.DeepCopyObject().(client.Object) //nolint:errcheck // it will be a client.Object anyway
-				if err := s.cli.Get(ctx, client.ObjectKeyFromObject(obj), tmp); err != nil {
-					if apierrors.IsNotFound(err) {
-						// Cache only after a successful create so ClearApplied never
-						// tries to delete a resource that was never applied.
-						if err = s.cli.Apply(ctx, applyObj, client.ForceOwnership, client.FieldOwner(managerField)); err != nil {
-							return err
-						}
 
-						if ensureOpts.ToCache {
-							s.applied.Put(obj.GetName(), obj)
-						}
-
-						return nil
-					}
-
+				err = s.cli.Get(ctx, client.ObjectKeyFromObject(obj), tmp)
+				switch {
+				case err == nil, apierrors.IsNotFound(err):
+				default:
 					return fmt.Errorf("get object: %w", err)
 				}
 
-				return s.cli.Apply(ctx, applyObj, client.FieldOwner(managerField))
+				created := apierrors.IsNotFound(err)
+
+				// Always force ownership: SSA is idempotent for create and
+				// update, and forcing keeps updates from failing on fields this
+				// manager already owns.
+				if err = s.cli.Apply(ctx, applyObj, client.ForceOwnership, client.FieldOwner(managerField)); err != nil {
+					return err
+				}
+
+				if created && ensureOpts.ToCache {
+					s.applied.Put(appliedKey(obj), obj)
+				}
+
+				return nil
 			})
 		})
 	})
 }
 
-// toApplyConfiguration converts an client.Object to an runtime.ApplyConfiguration.
+// PatchOptions collects per-call overrides for Patch.
+type PatchOptions struct {
+	Retry wait.Backoff
+}
+
+// PatchOptionFunc is a functional option for a single Patch call.
+type PatchOptionFunc func(*PatchOptions)
+
+// WithPatchRetry sets the application-level retry for this Patch call.
+func WithPatchRetry(attempts int, backoff time.Duration) PatchOptionFunc {
+	return func(o *PatchOptions) {
+		o.Retry = retryBackoff(attempts, backoff)
+	}
+}
+
+// Patch applies RFC 6902 patches to the live object on the cluster: it fetches
+// the current object, applies the patches client-side (creating missing parents
+// on add), and writes the result back with optimistic concurrency. Operating on
+// the live object preserves fields set by earlier steps, unlike re-applying a
+// freshly rendered template.
+func (s *Service) Patch(ctx context.Context, obj client.Object, patches patch.Patches, opts ...PatchOptionFunc) error {
+	if obj == nil {
+		return interrors.ErrNilObject
+	}
+
+	if s.dryRun {
+		s.logger.Debug("dry run enabled, skipping patch")
+		return nil
+	}
+
+	if err := s.setNamespace(obj); err != nil {
+		return fmt.Errorf("set namespace for the object '%s': %w", obj.GetName(), err)
+	}
+
+	patchOpts := &PatchOptions{Retry: retryBackoff(1, 0)}
+	for _, opt := range opts {
+		opt(patchOpts)
+	}
+
+	applyOpts := jsonpatch.NewApplyOptions()
+	applyOpts.EnsurePathExistsOnAdd = true
+
+	gvk := obj.GetObjectKind().GroupVersionKind()
+	key := client.ObjectKeyFromObject(obj)
+
+	return retry.OnError(patchOpts.Retry, retryAlways, func() error {
+		// Re-read and re-apply on conflict so a concurrent update does not fail
+		// the whole patch.
+		return retry.OnError(retry.DefaultBackoff, apierrors.IsConflict, func() error {
+			live := &unstructured.Unstructured{}
+			live.SetGroupVersionKind(gvk)
+
+			if err := s.cli.Get(ctx, key, live); err != nil {
+				return fmt.Errorf("get object: %w", err)
+			}
+
+			patched, err := patches.Apply(live, applyOpts)
+			if err != nil {
+				return fmt.Errorf("apply patches to object '%s': %w", obj.GetName(), err)
+			}
+
+			s.logger.Debug("patch object", "name", obj.GetName(), "gvk", gvk.String(), "namespace", obj.GetNamespace())
+
+			return s.cli.Update(ctx, patched)
+		})
+	})
+}
+
+// appliedKey builds a cache key unique across namespace, kind, and name so two
+// objects with the same name but different kind or namespace (e.g. a Service and
+// a Deployment both named "app") do not overwrite each other in the applied
+// cache and silently leak past Cleanup.
+func appliedKey(obj client.Object) string {
+	gvk := obj.GetObjectKind().GroupVersionKind()
+	return strings.Join([]string{obj.GetNamespace(), gvk.Kind, obj.GetName()}, "/")
+}
+
+// toApplyConfiguration converts a client.Object to a runtime.ApplyConfiguration.
+// Unstructured objects are used directly; typed objects (e.g. the engine-built
+// Namespace) are converted to unstructured first. Typed objects must carry their
+// TypeMeta so the resulting apply keeps apiVersion/kind for Server-Side Apply.
 func toApplyConfiguration(obj client.Object) (runtime.ApplyConfiguration, error) {
 	raw, ok := obj.(*unstructured.Unstructured)
 	if !ok {
-		return nil, fmt.Errorf("object is not unstructured: %T", obj)
+		data, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+		if err != nil {
+			return nil, fmt.Errorf("convert %T to unstructured: %w", obj, err)
+		}
+
+		raw = &unstructured.Unstructured{Object: data}
 	}
 
 	return client.ApplyConfigurationFromUnstructured(raw), nil
@@ -332,7 +429,7 @@ func (s *Service) Delete(ctx context.Context, obj client.Object, opts ...DeleteO
 		return nil
 	}
 
-	deleteOpts := new(DeleteOptions)
+	deleteOpts := &DeleteOptions{Retry: retryBackoff(1, 0)}
 	for _, opt := range opts {
 		opt(deleteOpts)
 	}
@@ -340,11 +437,11 @@ func (s *Service) Delete(ctx context.Context, obj client.Object, opts ...DeleteO
 	if err := retry.OnError(deleteOpts.Retry, retryAlways, func() error {
 		return retry.OnError(retry.DefaultBackoff, apierrors.IsServerTimeout, func() error {
 			return retry.OnError(retry.DefaultBackoff, apierrors.IsServiceUnavailable, func() error {
-				s.applied.Delete(obj.GetName())
-
 				if err := s.setNamespace(obj); err != nil {
 					return fmt.Errorf("set namespace for the object '%s': %w", obj.GetName(), err)
 				}
+
+				s.applied.Delete(appliedKey(obj))
 
 				s.logger.Debug("delete object",
 					"name", obj.GetName(),
@@ -501,12 +598,18 @@ func (s *Service) Wait(ctx context.Context, obj client.Object, opts ...WaitOptio
 			return ev.Error
 
 		case event.SyncEvent, event.ResourceUpdateEvent:
-			// deletion mode: finish when kstatus says NotFound
+			// ev.Resource is nil for SyncEvent; guard before any deref.
+			if ev.Resource == nil || ev.Resource.Identifier != id {
+				continue
+			}
+
+			// deletion mode: finish when kstatus says NotFound (its manifest
+			// Resource is nil, so this must run before the nil-manifest guard).
 			if waitOpts.onDeletion && ev.Resource.Status == status.NotFoundStatus {
 				return nil
 			}
 
-			if ev.Resource == nil || ev.Resource.Identifier != id || ev.Resource.Resource == nil {
+			if ev.Resource.Resource == nil {
 				continue
 			}
 
@@ -568,7 +671,7 @@ func (s *Service) Check(ctx context.Context, obj client.Object, conditions []str
 		return nil
 	}
 
-	checkOpts := new(CheckOptions)
+	checkOpts := &CheckOptions{Retry: retryBackoff(1, 0)}
 	for _, opt := range opts {
 		opt(checkOpts)
 	}
@@ -728,13 +831,141 @@ func WithLogsMatch(match LogsMatch) LogsOptionFunc {
 	}
 }
 
-// LogsContains polls the logs of obj until they contain expected, the context
-// is canceled, or the timeout expires. obj may be a Pod, Deployment, ReplicaSet,
-// or StatefulSet — workload types are resolved to a running pod via their
-// spec.selector.matchLabels. Returns ErrLogsNotContain on timeout.
-func (s *Service) LogsContains(ctx context.Context, obj client.Object, expected string, opts ...LogsOptionFunc) error {
-	if obj == nil {
+// workloadKinds are the workload types Exec and Logs resolve to pods via their
+// spec.selector.matchLabels.
+var workloadKinds = map[string]bool{"Deployment": true, "ReplicaSet": true, "StatefulSet": true}
+
+// PodTarget identifies the pods an Exec or Logs action operates on. Exactly one
+// of Object or (Kind + LabelSelector) is used: Object resolves a Pod or workload
+// by name; Kind + LabelSelector selects existing objects by label.
+type PodTarget struct {
+	// Object is a Pod or workload (Deployment/ReplicaSet/StatefulSet) to resolve
+	// pods from. When nil, Kind and LabelSelector are used instead.
+	Object client.Object
+	// Kind is the object kind to select when Object is nil.
+	Kind string
+	// LabelSelector filters objects of Kind, e.g. "app=nginx".
+	LabelSelector string
+}
+
+// validate reports whether the target identifies pods one way or the other.
+func (t PodTarget) validate() error {
+	if t.Object == nil && (t.Kind == "" || t.LabelSelector == "") {
 		return interrors.ErrNilObject
+	}
+
+	return nil
+}
+
+// describe returns a short human-readable identifier for logs and errors.
+func (t PodTarget) describe() string {
+	if t.Object != nil {
+		return fmt.Sprintf("%s %q", t.Object.GetObjectKind().GroupVersionKind().Kind, t.Object.GetName())
+	}
+
+	return fmt.Sprintf("%s [%s]", t.Kind, t.LabelSelector)
+}
+
+// podSelector resolves target to a namespace and either a concrete pod name (a
+// named Pod) or a pod label selector. Exactly one of podName or selector is
+// non-empty.
+func (s *Service) podSelector(ctx context.Context, target PodTarget) (ns, podName, selector string, err error) {
+	if target.Object != nil {
+		gvk := target.Object.GetObjectKind().GroupVersionKind()
+
+		ns = target.Object.GetNamespace()
+		if ns == "" {
+			ns = s.namespace
+		}
+
+		if gvk.Kind == "Pod" {
+			return ns, target.Object.GetName(), "", nil
+		}
+
+		if !workloadKinds[gvk.Kind] {
+			return "", "", "", fmt.Errorf("unsupported kind %q; use Pod, Deployment, ReplicaSet, or StatefulSet", gvk.Kind)
+		}
+
+		live := &unstructured.Unstructured{}
+		live.SetGroupVersionKind(gvk)
+
+		// Use the resolved namespace (the rendered object may not carry one)
+		// so the workload is fetched from the case namespace, not "".
+		key := client.ObjectKey{Namespace: ns, Name: target.Object.GetName()}
+		if err = s.cli.Get(ctx, key, live); err != nil {
+			return "", "", "", fmt.Errorf("get %s: %w", target.describe(), err)
+		}
+
+		selector, err = matchLabelsSelector(live)
+		if err != nil {
+			return "", "", "", fmt.Errorf("%s: %w", target.describe(), err)
+		}
+
+		return ns, "", selector, nil
+	}
+
+	ns = s.namespace
+
+	if target.Kind == "Pod" {
+		return ns, "", target.LabelSelector, nil
+	}
+
+	if !workloadKinds[target.Kind] {
+		return "", "", "", fmt.Errorf("unsupported kind %q; use Pod, Deployment, ReplicaSet, or StatefulSet", target.Kind)
+	}
+
+	selector, err = s.workloadPodSelector(ctx, target.Kind, target.LabelSelector, ns)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	return ns, "", selector, nil
+}
+
+// matchLabelsSelector reads spec.selector.matchLabels from a workload object and
+// returns it as a label selector string.
+func matchLabelsSelector(obj *unstructured.Unstructured) (string, error) {
+	matchLabels, found, err := unstructured.NestedStringMap(obj.Object, "spec", "selector", "matchLabels")
+	if err != nil {
+		return "", fmt.Errorf("read spec.selector.matchLabels: %w", err)
+	}
+
+	if !found || len(matchLabels) == 0 {
+		return "", errors.New("no spec.selector.matchLabels")
+	}
+
+	return labels.Set(matchLabels).String(), nil
+}
+
+// workloadPodSelector lists workloads of kind matching labelSelector in ns and
+// returns the pod selector of the first match.
+func (s *Service) workloadPodSelector(ctx context.Context, kind, labelSelector, ns string) (string, error) {
+	sel, err := labels.Parse(labelSelector)
+	if err != nil {
+		return "", fmt.Errorf("parse label selector '%s': %w", labelSelector, err)
+	}
+
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(schema.GroupVersionKind{Group: "apps", Version: "v1", Kind: kind + "List"})
+
+	if err = s.cli.List(ctx, list, client.InNamespace(ns), client.MatchingLabelsSelector{Selector: sel}); err != nil {
+		return "", fmt.Errorf("list %s by '%s': %w", kind, labelSelector, err)
+	}
+
+	if len(list.Items) == 0 {
+		return "", fmt.Errorf("no %s matching '%s' in namespace '%s'", kind, labelSelector, ns)
+	}
+
+	return matchLabelsSelector(&list.Items[0])
+}
+
+// LogsContains polls the logs of target until they contain expected, the context
+// is canceled, or the timeout expires. The target is a Pod or workload object, or
+// a kind plus label selector — both resolve to their pods. Returns
+// ErrLogsNotContain on timeout.
+func (s *Service) LogsContains(ctx context.Context, target PodTarget, expected string, opts ...LogsOptionFunc) error {
+	if err := target.validate(); err != nil {
+		return err
 	}
 
 	if s.dryRun {
@@ -743,29 +974,22 @@ func (s *Service) LogsContains(ctx context.Context, obj client.Object, expected 
 		return nil
 	}
 
-	if err := s.setNamespace(obj); err != nil {
-		return fmt.Errorf("set namespace for object '%s': %w", obj.GetName(), err)
-	}
-
 	logsOpts := newLogsOptions()
 	for _, opt := range opts {
 		opt(logsOpts)
 	}
 
-	s.logger.Debug("polling logs",
-		"name", obj.GetName(),
-		"kind", obj.GetObjectKind().GroupVersionKind().Kind,
-		"namespace", obj.GetNamespace(),
-		"contains", expected)
+	desc := target.describe()
+	s.logger.Debug("polling logs", "target", desc, "contains", expected)
 
 	tail := defaultLogsTailLines
 	podLogOpts := &corev1.PodLogOptions{Container: logsOpts.container, TailLines: &tail}
 
 	pollErr := wait.PollUntilContextTimeout(ctx, logsOpts.interval, logsOpts.timeout, true,
 		func(ctx context.Context) (bool, error) {
-			reqs, err := s.resolvePodsForLogs(ctx, obj, podLogOpts)
+			reqs, err := s.resolvePodsForLogs(ctx, target, podLogOpts)
 			if err != nil {
-				s.logger.Debug("could not resolve pods for logs", "name", obj.GetName(), "error", err)
+				s.logger.Debug("could not resolve pods for logs", "target", desc, "error", err)
 
 				return false, nil
 			}
@@ -775,7 +999,7 @@ func (s *Service) LogsContains(ctx context.Context, obj client.Object, expected 
 			for _, req := range reqs {
 				stream, streamErr := req.Stream(ctx)
 				if streamErr != nil {
-					s.logger.Debug("pod logs not yet available", "name", obj.GetName(), "error", streamErr)
+					s.logger.Debug("pod logs not yet available", "target", desc, "error", streamErr)
 
 					continue
 				}
@@ -783,11 +1007,11 @@ func (s *Service) LogsContains(ctx context.Context, obj client.Object, expected 
 				data, readErr := io.ReadAll(stream)
 
 				if err := stream.Close(); err != nil {
-					s.logger.Debug("close pod log stream error", "name", obj.GetName(), "error", err)
+					s.logger.Debug("close pod log stream error", "target", desc, "error", err)
 				}
 
 				if readErr != nil {
-					s.logger.Debug("read pod logs error", "name", obj.GetName(), "error", readErr)
+					s.logger.Debug("read pod logs error", "target", desc, "error", readErr)
 
 					continue
 				}
@@ -813,55 +1037,27 @@ func (s *Service) LogsContains(ctx context.Context, obj client.Object, expected 
 			}
 		})
 	if pollErr != nil {
-		return fmt.Errorf("%w: %q not found in logs of %s %q",
-			interrors.ErrLogsNotContain, expected,
-			obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName())
+		return fmt.Errorf("%w: %q not found in logs of %s", interrors.ErrLogsNotContain, expected, desc)
 	}
 
 	return nil
 }
 
-// resolvePodsForLogs builds a log request for every available pod of obj.
-// Pods are resolved directly; Deployment, ReplicaSet, and StatefulSet are
-// resolved to their pods via spec.selector.matchLabels. Failed and Unknown
-// pods are excluded.
-func (s *Service) resolvePodsForLogs(ctx context.Context, obj client.Object, logOpts *corev1.PodLogOptions) ([]*rest.Request, error) {
-	gvk := obj.GetObjectKind().GroupVersionKind()
-	ns := obj.GetNamespace()
-
-	if gvk.Kind == "Pod" {
-		req := s.clientset.CoreV1().Pods(ns).GetLogs(obj.GetName(), logOpts)
-
-		return []*rest.Request{req}, nil
-	}
-
-	switch gvk.Kind {
-	case "Deployment", "ReplicaSet", "StatefulSet":
-	default:
-		return nil, fmt.Errorf("logs action not supported for %s; use Pod, Deployment, ReplicaSet, or StatefulSet", gvk.Kind)
-	}
-
-	live := &unstructured.Unstructured{}
-	live.SetGroupVersionKind(gvk)
-
-	if err := s.cli.Get(ctx, client.ObjectKeyFromObject(obj), live); err != nil {
-		return nil, fmt.Errorf("get %s %q: %w", gvk.Kind, obj.GetName(), err)
-	}
-
-	matchLabels, found, err := unstructured.NestedStringMap(live.Object, "spec", "selector", "matchLabels")
+// resolvePodsForLogs builds a log request for every available pod of target.
+// Failed and Unknown pods are excluded.
+func (s *Service) resolvePodsForLogs(ctx context.Context, target PodTarget, logOpts *corev1.PodLogOptions) ([]*rest.Request, error) {
+	ns, podName, selector, err := s.podSelector(ctx, target)
 	if err != nil {
-		return nil, fmt.Errorf("read spec.selector.matchLabels from %s %q: %w", gvk.Kind, obj.GetName(), err)
+		return nil, err
 	}
 
-	if !found || len(matchLabels) == 0 {
-		return nil, fmt.Errorf("%s %q has no spec.selector.matchLabels", gvk.Kind, obj.GetName())
+	if podName != "" {
+		return []*rest.Request{s.clientset.CoreV1().Pods(ns).GetLogs(podName, logOpts)}, nil
 	}
 
-	sel := labels.Set(matchLabels).String()
-
-	pods, err := s.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: sel})
+	pods, err := s.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
-		return nil, fmt.Errorf("list pods for %s %q: %w", gvk.Kind, obj.GetName(), err)
+		return nil, fmt.Errorf("list pods by '%s': %w", selector, err)
 	}
 
 	reqs := make([]*rest.Request, 0, len(pods.Items))
@@ -878,7 +1074,7 @@ func (s *Service) resolvePodsForLogs(ctx context.Context, obj client.Object, log
 	}
 
 	if len(reqs) == 0 {
-		return nil, fmt.Errorf("no available pods found for %s %q", gvk.Kind, obj.GetName())
+		return nil, fmt.Errorf("no available pods found for selector '%s' in namespace '%s'", selector, ns)
 	}
 
 	return reqs, nil
@@ -921,9 +1117,9 @@ func WithExecTimeout(timeout time.Duration) ExecOptionFunc {
 // Exec runs command inside the resolved pod and succeeds when the command
 // exits with code zero. obj may be a Pod, Deployment, ReplicaSet, or
 // StatefulSet — workload types resolve to a single Running pod.
-func (s *Service) Exec(ctx context.Context, obj client.Object, command []string, opts ...ExecOptionFunc) error {
-	if obj == nil {
-		return interrors.ErrNilObject
+func (s *Service) Exec(ctx context.Context, target PodTarget, command []string, opts ...ExecOptionFunc) error {
+	if err := target.validate(); err != nil {
+		return err
 	}
 
 	if s.dryRun {
@@ -932,11 +1128,7 @@ func (s *Service) Exec(ctx context.Context, obj client.Object, command []string,
 		return nil
 	}
 
-	if err := s.setNamespace(obj); err != nil {
-		return fmt.Errorf("set namespace for object '%s': %w", obj.GetName(), err)
-	}
-
-	execOpts := &ExecOptions{}
+	execOpts := &ExecOptions{retry: retryBackoff(1, 0)}
 
 	for _, opt := range opts {
 		opt(execOpts)
@@ -951,7 +1143,7 @@ func (s *Service) Exec(ctx context.Context, obj client.Object, command []string,
 	}
 
 	return retry.OnError(execOpts.retry, retryAlways, func() error {
-		podName, err := s.resolvePodForExec(ctx, obj)
+		ns, podName, err := s.resolvePodForExec(ctx, target)
 		if err != nil {
 			return fmt.Errorf("resolve pod for exec: %w", err)
 		}
@@ -959,7 +1151,7 @@ func (s *Service) Exec(ctx context.Context, obj client.Object, command []string,
 		req := s.clientset.CoreV1().RESTClient().Post().
 			Resource("pods").
 			Name(podName).
-			Namespace(obj.GetNamespace()).
+			Namespace(ns).
 			SubResource("exec").
 			VersionedParams(&corev1.PodExecOptions{
 				Command:   command,
@@ -973,7 +1165,16 @@ func (s *Service) Exec(ctx context.Context, obj client.Object, command []string,
 			return fmt.Errorf("create exec executor: %w", err)
 		}
 
-		if streamErr := executor.StreamWithContext(ctx, remotecommand.StreamOptions{}); streamErr != nil {
+		var stdout, stderr bytes.Buffer
+
+		if streamErr := executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+			Stdout: &stdout,
+			Stderr: &stderr,
+		}); streamErr != nil {
+			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+				return fmt.Errorf("exec %v in pod %q: %w: %s", command, podName, streamErr, msg)
+			}
+
 			return fmt.Errorf("exec %v in pod %q: %w", command, podName, streamErr)
 		}
 
@@ -981,53 +1182,31 @@ func (s *Service) Exec(ctx context.Context, obj client.Object, command []string,
 	})
 }
 
-// resolvePodForExec returns the name of a single Running pod for obj.
-// Pods are resolved directly; Deployment, ReplicaSet, and StatefulSet are
-// resolved to the first Running pod via spec.selector.matchLabels.
-func (s *Service) resolvePodForExec(ctx context.Context, obj client.Object) (string, error) {
-	gvk := obj.GetObjectKind().GroupVersionKind()
-	ns := obj.GetNamespace()
-
-	if gvk.Kind == "Pod" {
-		return obj.GetName(), nil
-	}
-
-	switch gvk.Kind {
-	case "Deployment", "ReplicaSet", "StatefulSet":
-	default:
-		return "", fmt.Errorf("exec not supported for %s; use Pod, Deployment, ReplicaSet, or StatefulSet", gvk.Kind)
-	}
-
-	live := &unstructured.Unstructured{}
-	live.SetGroupVersionKind(gvk)
-
-	if err := s.cli.Get(ctx, client.ObjectKeyFromObject(obj), live); err != nil {
-		return "", fmt.Errorf("get %s %q: %w", gvk.Kind, obj.GetName(), err)
-	}
-
-	matchLabels, found, err := unstructured.NestedStringMap(live.Object, "spec", "selector", "matchLabels")
+// resolvePodForExec resolves target to the namespace and name of a single
+// Running pod. A named Pod is used directly; workloads and label selectors
+// resolve to the first Running pod.
+func (s *Service) resolvePodForExec(ctx context.Context, target PodTarget) (string, string, error) {
+	ns, podName, selector, err := s.podSelector(ctx, target)
 	if err != nil {
-		return "", fmt.Errorf("read spec.selector.matchLabels from %s %q: %w", gvk.Kind, obj.GetName(), err)
+		return "", "", err
 	}
 
-	if !found || len(matchLabels) == 0 {
-		return "", fmt.Errorf("%s %q has no spec.selector.matchLabels", gvk.Kind, obj.GetName())
+	if podName != "" {
+		return ns, podName, nil
 	}
 
-	sel := labels.Set(matchLabels).String()
-
-	pods, err := s.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: sel})
+	pods, err := s.clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
-		return "", fmt.Errorf("list pods for %s %q: %w", gvk.Kind, obj.GetName(), err)
+		return "", "", fmt.Errorf("list pods by '%s': %w", selector, err)
 	}
 
 	for i := range pods.Items {
 		if pods.Items[i].Status.Phase == corev1.PodRunning {
-			return pods.Items[i].Name, nil
+			return ns, pods.Items[i].Name, nil
 		}
 	}
 
-	return "", fmt.Errorf("no running pod found for %s %q", gvk.Kind, obj.GetName())
+	return "", "", fmt.Errorf("no running pod found for selector '%s' in namespace '%s'", selector, ns)
 }
 
 // GetVersion returns the Kubernetes API server GitVersion string (e.g., "v1.33.2").
@@ -1056,11 +1235,15 @@ func (s *Service) Cleanup(ctx context.Context) error {
 		return nil
 	}
 
+	// Best-effort: attempt every object and aggregate failures so one failed
+	// delete does not leave the remaining resources leaked in the cluster.
+	var errs []error
+
 	for _, obj := range s.applied.Iter() {
 		if err := s.Delete(ctx, obj); err != nil {
-			return fmt.Errorf("delete the applied object '%s': %w", obj.GetName(), err)
+			errs = append(errs, fmt.Errorf("delete the applied object '%s': %w", obj.GetName(), err))
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }

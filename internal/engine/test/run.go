@@ -45,8 +45,6 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 		return finishReport(report, fmt.Errorf("create template manager: %w", err))
 	}
 
-	logger.Info("run test", "name", test.Name)
-
 	var runErr error
 
 	execFunc := func(total, idx int, casePath string) error {

@@ -8,10 +8,18 @@ import (
 	"github.com/ipaqsa/kube2e/internal/tools/patch"
 )
 
-// Target identifies the Kubernetes resource an action operates on.
+// Target identifies the Kubernetes resource an action operates on. Most actions
+// reference a templated object by name. Exec and Logs additionally accept a kind
+// plus label selector to target existing pods that were not created from a
+// template. Object and Kind/LabelSelector are mutually exclusive.
 type Target struct {
 	// Object is the resource name — a key in the case-level Objects map.
-	Object string `yaml:"object" json:"object" validate:"required"`
+	Object string `yaml:"object" json:"object" validate:"required_without=Kind,excluded_with=Kind"`
+	// Kind selects existing objects by label instead of a templated object.
+	// Only Exec and Logs honor it: Pod, Deployment, ReplicaSet, or StatefulSet.
+	Kind string `yaml:"kind" json:"kind" validate:"required_with=LabelSelector"`
+	// LabelSelector filters objects of Kind, e.g. "app=nginx".
+	LabelSelector string `yaml:"labelSelector" json:"labelSelector" validate:"required_with=Kind"`
 }
 
 // Retry configures retry behavior for an action.

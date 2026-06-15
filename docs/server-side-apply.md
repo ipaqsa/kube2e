@@ -25,8 +25,11 @@ Deployment that an HPA scales).
 ## Per-case cleanup
 
 After each case finishes — whether it passed or failed — kube2e deletes every
-object recorded in the applied cache. If the case declared a `namespace`, the
-namespace is deleted after the case's resources are removed.
+object recorded in the applied cache. If the case declared a `namespace`, kube2e
+creates it when absent but **never deletes it**: the namespace is excluded from
+the applied cache so cleanup leaves it in place. This avoids tearing down a
+namespace kube2e may not own (e.g. a pre-existing user namespace); remove it
+yourself if your test created it solely for its own use.
 
 This cleanup is deterministic and automatic: you do not write teardown steps for
 objects created with `ensure`. Use the [`delete`](actions.md#delete) action only

@@ -123,16 +123,6 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 		}
 	}
 
-	defer func() {
-		if namespace != nil {
-			svc.logger.Debug("delete namespace", "name", namespace.Name)
-
-			if deleteErr := svc.kube.Delete(ctx, namespace); deleteErr != nil {
-				svc.logger.Warn("delete namespace", "name", namespace.Name, "error", deleteErr)
-			}
-		}
-	}()
-
 	runReport, err := svc.run(ctx, testCase)
 	if runReport != nil {
 		report = runReport
@@ -197,6 +187,9 @@ func (s *service) runStepWithHooks(ctx context.Context, total, idx int, testCase
 
 	if err != nil {
 		result = errors.Join(result, err)
+		// The main step never ran; record it as skipped so per-case step
+		// counts still reconcile with report.Total.
+		stepReport = skippedStepReport(caseStep, fmt.Sprintf("before hook failed: %s", err))
 	} else {
 		stepReport, err = s.runStep(ctx, total, idx, testCase, caseStep, "step")
 		if err != nil {
@@ -253,7 +246,7 @@ func (s *service) runStep(ctx context.Context, total, idx int, testCase *Case, s
 		actions = st.CountActions()
 	}
 
-	log := s.logger.With("name", name, "actions", actions)
+	log := s.logger.With("name", name, "actions", actions, "namespace", testCase.Namespace)
 
 	progress := fmt.Sprintf("[%d/%d]", idx, total)
 	log.Info("run step", "progress", progress, "phase", phase)

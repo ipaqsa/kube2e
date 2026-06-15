@@ -45,8 +45,10 @@ type Case struct {
 	// The case is skipped unless at least one of its tags matches the requested tags.
 	Tags []string `yaml:"tags" json:"tags"`
 
-	// Namespace is the Kubernetes namespace to create before the case runs and
-	// delete after cleanup. Objects without an explicit namespace inherit this value.
+	// Namespace is the Kubernetes namespace to create before the case runs if it
+	// does not already exist. It is never deleted by kube2e, so a pre-existing
+	// user namespace is left intact. Objects without an explicit namespace inherit
+	// this value.
 	Namespace string `yaml:"namespace" json:"namespace"`
 
 	// Objects maps a resource name to its template base-filename (without .yaml).
@@ -94,13 +96,20 @@ func parseCaseFile(path string) (*Case, error) {
 func formatValidationErrors(errs validator.ValidationErrors) string {
 	msgs := make([]string, 0, len(errs))
 	for _, e := range errs {
-		field := strings.TrimPrefix(e.Namespace(), "Case.")
+		// Drop the embedded actionOptions segment so paths read target.object.
+		field := strings.ReplaceAll(strings.TrimPrefix(e.Namespace(), "Case."), "actionOptions.", "")
 
 		var msg string
 
 		switch e.Tag() {
 		case "required":
 			msg = field + ": required"
+		case "required_without":
+			msg = field + ": required when " + e.Param() + " is not set"
+		case "required_with":
+			msg = field + ": required when " + e.Param() + " is set"
+		case "excluded_with":
+			msg = field + ": must not be set together with " + e.Param()
 		case "eq":
 			msg = field + ": must equal " + e.Param()
 		case "min":

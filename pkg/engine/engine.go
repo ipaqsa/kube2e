@@ -3,6 +3,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -121,42 +122,65 @@ func runLocal(ctx context.Context, cfg *Config, logger *slog.Logger) (*Report, e
 	var mu sync.Mutex
 
 	reports := make(map[string]test.Report, len(dirs))
+	testErrs := make(map[string]error, len(dirs))
 
+	// Suites are independent: a failing suite must not abort the others. The
+	// worker never returns an error (which would cancel the shared errgroup
+	// context and tear down sibling suites); failures are collected instead.
 	runErr := workerpool.Do(ctx, max(cfg.Parallel, 1), func(ctx context.Context, dir string) error {
+		// Derive a per-test logger; reassigning the shared logger would
+		// accumulate "name" attributes and race across parallel workers.
+		log := logger.With("name", filepath.Base(dir))
+
+		log.Info("run test")
+
 		conf := &test.Config{
 			RestConf: cfg.RestConfig,
 			TestDir:  dir,
 			Tags:     cfg.Tags,
 			DryRun:   cfg.DryRun,
-			Logger:   logger,
+			Logger:   log,
 		}
 
 		testReport, testErr := test.Run(ctx, conf)
+
+		mu.Lock()
 		if testReport != nil {
-			mu.Lock()
 			reports[dir] = *testReport
-			mu.Unlock()
 		}
 
 		if testErr != nil {
-			return fmt.Errorf("test %q: %w", filepath.Base(dir), testErr)
+			testErrs[dir] = testErr
+		}
+		mu.Unlock()
+
+		if testErr != nil {
+			log.Error("test failed", "error", testErr)
+		} else {
+			log.Info("test finished")
 		}
 
 		return nil
 	}, dirs)
 
+	// Collect reports and errors in stable discovery order.
+	var errs []error
+
 	for _, dir := range dirs {
-		testReport, ok := reports[dir]
-		if !ok {
-			continue
+		if testReport, ok := reports[dir]; ok {
+			report.Tests = append(report.Tests, testReport)
 		}
 
-		report.Tests = append(report.Tests, testReport)
+		if testErr, ok := testErrs[dir]; ok {
+			errs = append(errs, fmt.Errorf("test %q: %w", filepath.Base(dir), testErr))
+		}
 	}
 
 	report.Passed, report.Failed = countTests(report.Tests)
 
-	report, err = finishReport(report, runErr)
+	// runErr only carries context cancellation (e.g. an interrupt signal);
+	// per-suite failures are aggregated separately so all suites run.
+	report, err = finishReport(report, errors.Join(append([]error{runErr}, errs...)...))
 
 	return report, err
 }

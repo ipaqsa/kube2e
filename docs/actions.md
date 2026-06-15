@@ -107,10 +107,20 @@ Supported object kinds: **Pod**, **Deployment**, **ReplicaSet**, **StatefulSet**
 For workload types, a running pod is resolved via `spec.selector.matchLabels` on
 each poll tick; if no pod is ready yet, the tick is silently skipped.
 
+The target is specified one of two ways (mutually exclusive):
+
+- `object` — a key in the case `objects` map (a templated Pod or workload).
+- `kind` + `labelSelector` — select existing pods (or a workload's pods) by
+  label, without a template. Useful for resources created outside the suite
+  (operators, Helm). For workload kinds, the first match's pods are used.
+
 ```yaml
 logs:
   target:
-    object: <string>    # required — key in the case objects map
+    object: <string>          # key in the case objects map …
+    # — or —
+    kind: <Pod|Deployment|ReplicaSet|StatefulSet>
+    labelSelector: <string>   # e.g. "app=nginx"
   contains: <string>    # required — substring to search for in the log output
   container: <string>   # optional — container name; omit for single-container pods
   match: <any|all|none> # optional — match policy across pods (default: any)
@@ -140,10 +150,16 @@ Supported object kinds: **Pod**, **Deployment**, **ReplicaSet**, **StatefulSet**
 For workload types, the first Running pod is resolved via
 `spec.selector.matchLabels`.
 
+Like `logs`, the target is either a templated `object` or a `kind` +
+`labelSelector` pair selecting an existing pod (the first Running match):
+
 ```yaml
 exec:
   target:
-    object: <string>     # required — key in the case objects map
+    object: <string>          # key in the case objects map …
+    # — or —
+    kind: <Pod|Deployment|ReplicaSet|StatefulSet>
+    labelSelector: <string>   # e.g. "app=nginx"
   command:               # required — passed directly to the container; no shell wrapping
     - sh
     - -c
@@ -155,8 +171,8 @@ exec:
   timeout: <duration>    # hard deadline for the command (default: 30s)
 ```
 
-Use `["sh", "-c", "..."]` to run shell expressions. stdout and stderr are
-captured and emitted at debug level.
+Use `["sh", "-c", "..."]` to run shell expressions. On failure, the command's
+stderr is included in the returned error.
 
 ## `delete`
 

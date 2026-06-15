@@ -4,6 +4,7 @@ package tests
 import (
 	"github.com/spf13/cobra"
 
+	cmdadd "github.com/ipaqsa/kube2e/pkg/command/tests/add"
 	cmdpublish "github.com/ipaqsa/kube2e/pkg/command/tests/publish"
 )
 
@@ -14,10 +15,11 @@ func NewTestsCommand() *cobra.Command {
 		Short: "Manage kube2e test suites",
 		Long: `Manage kube2e test suites.
 
-Use subcommands to package and publish test suites for remote execution.`,
+Use subcommands to scaffold, package, and publish test suites.`,
 		Args: cobra.NoArgs,
 	}
 
+	cmd.AddCommand(cmdadd.NewAddCommand())
 	cmd.AddCommand(cmdpublish.NewPublishCommand())
 
 	return cmd

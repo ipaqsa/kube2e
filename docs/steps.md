@@ -34,11 +34,14 @@ assert:                  # optional — one-shot condition check
   ...
 logs:                    # optional — poll logs until output contains a string
   target:
-    object: <string>     # required — Pod, Deployment, ReplicaSet, or StatefulSet
+    object: <string>     # a templated Pod/Deployment/ReplicaSet/StatefulSet …
+    # — or — select existing pods by label (no template):
+    kind: <string>       # Pod, Deployment, ReplicaSet, or StatefulSet
+    labelSelector: <string>
   ...
 exec:                    # optional — run a command inside a pod
   target:
-    object: <string>     # required — Pod, Deployment, ReplicaSet, or StatefulSet
+    object: <string>     # … or kind + labelSelector, as with logs
   ...
 delete:                  # optional — remove the object
   target:
@@ -47,7 +50,8 @@ delete:                  # optional — remove the object
 ```
 
 > **Note:** `ensure` takes `object` directly (flat). Every other action nests it
-> under `target`.
+> under `target`. Only `logs` and `exec` accept `kind` + `labelSelector` as an
+> alternative to a templated `object`; the two forms are mutually exclusive.
 
 ## `delay`
 

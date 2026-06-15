@@ -53,14 +53,23 @@ func (t *Test) forEach(f func(total, idx int, casePath string) error) error {
 		return fmt.Errorf("read the cases dir '%s': %w", t.CasesDir(), err)
 	}
 
-	for idx, entry := range entries {
+	// Pre-filter to case files so total and idx reflect only executed cases,
+	// not directories or non-yaml entries. os.ReadDir returns sorted names, so
+	// alphabetical order is preserved.
+	var cases []string
+
+	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
 			continue
 		}
 
-		path := filepath.Join(t.CasesDir(), entry.Name())
+		cases = append(cases, entry.Name())
+	}
 
-		if err = f(len(entries), idx+1, path); err != nil {
+	for idx, name := range cases {
+		path := filepath.Join(t.CasesDir(), name)
+
+		if err = f(len(cases), idx+1, path); err != nil {
 			return err
 		}
 	}
