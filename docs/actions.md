@@ -28,7 +28,11 @@ ensure:
 
 ## `patch`
 
-Apply RFC 6902 JSON Patch operations to the rendered object, then re-ensure it.
+Apply RFC 6902 JSON Patch operations to the **live** object on the cluster. The
+action fetches the current object, applies the patches (creating missing parent
+paths on `add`), and writes the result back. Because it operates on live state,
+`patch` preserves fields set by earlier steps — it does not re-render the
+template.
 
 ```yaml
 patch:

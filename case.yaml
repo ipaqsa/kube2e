@@ -101,8 +101,9 @@ steps:
       delay: 0s
 
     # ── Patch ─────────────────────────────────────────────────────────────────
-    # Apply one or more RFC 6902 JSON Patch operations to the rendered object,
-    # then ensure it on the cluster using Server-Side Apply.
+    # Apply one or more RFC 6902 JSON Patch operations to the live object on the
+    # cluster (read, patch, write back). Operating on live state preserves fields
+    # set by earlier steps; it does not re-render the template.
     patch:
       target:
         # Required. Key from the case-level objects map.
@@ -200,9 +201,13 @@ steps:
     # The action fails when zero Running pods are found.
     logs:
       target:
-        # Required. Key from the case-level objects map.
-        # Must be a Pod, Deployment, ReplicaSet, or StatefulSet.
+        # A templated object (a key from the objects map; must be a Pod,
+        # Deployment, ReplicaSet, or StatefulSet) …
         object: my-resource
+        # … or select existing pods by label instead (mutually exclusive with
+        # object; only logs and exec support this form):
+        # kind: Pod                 # Pod, Deployment, ReplicaSet, or StatefulSet
+        # labelSelector: app=demo
 
       # Required. Substring to search for in each pod's log output.
       contains: "expected output"
@@ -232,9 +237,13 @@ steps:
     # The action fails when zero Running pods are found.
     exec:
       target:
-        # Required. Key from the case-level objects map.
-        # Must be a Pod, Deployment, ReplicaSet, or StatefulSet.
+        # A templated object (a key from the objects map; must be a Pod,
+        # Deployment, ReplicaSet, or StatefulSet) …
         object: my-resource
+        # … or select an existing pod by label instead (mutually exclusive with
+        # object; only logs and exec support this form):
+        # kind: Pod                 # Pod, Deployment, ReplicaSet, or StatefulSet
+        # labelSelector: app=demo
 
       # Required. Command to execute, passed as a string slice (no shell wrapping).
       # Use ["sh", "-c", "..."] to run shell expressions.

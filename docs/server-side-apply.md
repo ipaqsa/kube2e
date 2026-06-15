@@ -9,8 +9,10 @@ Kubernetes **v1.22+**.
 - The [`ensure`](actions.md#ensure) action renders the object from its template
   and applies it via SSA.
 - Each applied object is recorded in a thread-safe store for later cleanup.
-- [`patch`](actions.md#patch) applies RFC 6902 JSON Patch operations to the
-  rendered object and then re-ensures it through the same SSA path.
+
+[`patch`](actions.md#patch) is the exception: it does **not** use SSA. It reads
+the live object, applies RFC 6902 JSON Patch operations to it, and writes the
+result back, so it preserves fields set by earlier steps.
 
 ## Field-manager conflicts
 

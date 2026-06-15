@@ -20,7 +20,7 @@ optional: <bool>         # when true, failures are warned and skipped
 ensure:                  # optional — create or update the object
   object: <string>       # required (flat, no target nesting)
   ...
-patch:                   # optional — apply JSON patches then re-ensure
+patch:                   # optional — apply JSON patches to the live object
   target:
     object: <string>     # required
   ...
