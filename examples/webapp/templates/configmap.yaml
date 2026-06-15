@@ -2,5 +2,17 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .name }}
+  labels:
+    app: {{ .app | default "webapp" }}
 data:
-  GREETING: {{ .greeting | default "hello" | quote }}
+  # Served by nginx as the site root (mounted as a volume by the Deployment).
+  index.html: |
+    <!doctype html>
+    <html>
+      <body style="color: {{ .color | default "blue" }}">
+        <h1>{{ .greeting | default "Hello from kube2e" }}</h1>
+        <p>build: {{ .build | default "dev" }}</p>
+      </body>
+    </html>
+  # Exposed to the container as an env var to show configMapKeyRef wiring.
+  APP_COLOR: {{ .color | default "blue" | quote }}

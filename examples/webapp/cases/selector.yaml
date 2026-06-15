@@ -1,0 +1,70 @@
+version: v1
+name: selector
+description: |
+  Inspect the running app by label selector instead of by templated object —
+  the form you reach for when the pods were created by something other than this
+  suite (an operator, Helm, a controller). Then tear the Deployment down and wait
+  for it to be gone.
+tags:
+  - webapp
+  - deployment
+  - logs
+  - exec
+  - selector
+  - delete
+namespace: kube2e-webapp
+
+objects:
+  webapp-config: configmap
+  webapp: deployment
+
+steps:
+  - name: configure
+    ensure:
+      object: webapp-config
+      values:
+        app: webapp
+
+  - name: deploy
+    ensure:
+      object: webapp
+      values:
+        app: webapp
+        config: webapp-config
+        replicas: 2
+    wait:
+      target:
+        object: webapp
+      timeout: 2m
+      conditions:
+        - .status.readyReplicas == .spec.replicas
+
+  - name: inspect-by-label
+    # No object reference — resolve pods directly via kind + labelSelector.
+    # Only logs and exec accept this target form.
+    logs:
+      target:
+        kind: Pod
+        labelSelector: app=webapp
+      container: app
+      contains: "start worker process"
+      match: all
+      timeout: 1m
+    exec:
+      target:
+        kind: Pod
+        labelSelector: app=webapp
+      container: app
+      command:
+        - nginx
+        - -t
+      timeout: 15s
+
+  - name: teardown
+    # Delete owns its own deletion polling: wait: true blocks until the object
+    # is actually gone from the cluster, not merely marked for deletion.
+    delete:
+      target:
+        object: webapp
+      wait: true
+      timeout: 1m

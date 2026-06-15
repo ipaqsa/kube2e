@@ -1,0 +1,70 @@
+version: v1
+name: rollout
+description: |
+  Deploy the app, then roll out a new container image with a JSON patch and wait
+  for the rollout to fully converge (all replicas updated and ready) before
+  asserting the live spec reflects the new image.
+tags:
+  - webapp
+  - deployment
+  - configmap
+  - patch
+  - wait
+namespace: kube2e-webapp
+
+objects:
+  webapp-config: configmap
+  webapp: deployment
+
+steps:
+  - name: configure
+    ensure:
+      object: webapp-config
+      values:
+        app: webapp
+        color: blue
+
+  - name: deploy
+    ensure:
+      object: webapp
+      values:
+        app: webapp
+        config: webapp-config
+        replicas: 2
+        image: nginx:1.25-alpine
+    wait:
+      target:
+        object: webapp
+      timeout: 2m
+      conditions:
+        - .status.readyReplicas == .spec.replicas
+
+  - name: roll-new-image
+    patch:
+      target:
+        object: webapp
+      patches:
+        - op: replace
+          path: /spec/template/spec/containers/0/image
+          value: nginx:1.27-alpine
+    wait:
+      target:
+        object: webapp
+      timeout: 3m
+      # A converged rollout: the controller has observed the new spec, and every
+      # replica is both updated to the new pod template and ready.
+      conditions:
+        - .status.observedGeneration >= .metadata.generation
+        - (.status.updatedReplicas // 0) == .spec.replicas
+        - .status.readyReplicas == .spec.replicas
+    assert:
+      target:
+        object: webapp
+      # Retry absorbs the brief window where the status still reflects the old
+      # ReplicaSet right after the wait condition first flips true.
+      retry:
+        attempts: 3
+        backoff: 2s
+      conditions:
+        - .spec.template.spec.containers[0].image == "nginx:1.27-alpine"
+        - (.status.unavailableReplicas // 0) == 0

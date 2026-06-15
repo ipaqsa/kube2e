@@ -3,23 +3,35 @@ kind: Deployment
 metadata:
   name: {{ .name }}
   labels:
-    app: {{ .name }}
+    app: {{ .app | default "webapp" }}
 spec:
   replicas: {{ .replicas | default 2 }}
   selector:
     matchLabels:
-      app: {{ .name }}
+      app: {{ .app | default "webapp" }}
   template:
     metadata:
       labels:
-        app: {{ .name }}
+        app: {{ .app | default "webapp" }}
     spec:
       containers:
         - name: app
           image: {{ .image | default "nginx:1.25-alpine" }}
-          # Inject every key of the ConfigMap as an environment variable.
-          envFrom:
-            - configMapRef:
-                name: {{ .configName | default "config" }}
           ports:
             - containerPort: 80
+          # Pull a single value out of the ConfigMap into the environment.
+          env:
+            - name: APP_COLOR
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .config | default "webapp-config" }}
+                  key: APP_COLOR
+          # Mount the ConfigMap's index.html as the served site root.
+          volumeMounts:
+            - name: content
+              mountPath: /usr/share/nginx/html
+              readOnly: true
+      volumes:
+        - name: content
+          configMap:
+            name: {{ .config | default "webapp-config" }}

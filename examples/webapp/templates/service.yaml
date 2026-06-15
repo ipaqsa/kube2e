@@ -2,9 +2,13 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ .name }}
+  labels:
+    app: {{ .app | default "webapp" }}
 spec:
+  # Selects the Deployment's pods by the shared app label.
   selector:
-    app: {{ .selectorApp | default "web" }}
+    app: {{ .app | default "webapp" }}
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 80

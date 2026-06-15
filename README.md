@@ -412,17 +412,15 @@ The fully annotated case file is [`case.yaml`](case.yaml).
 
 ## Examples
 
-The [`examples/`](examples/) directory contains four runnable suites. All
-validate with `--dry-run` (no cluster required) and run end-to-end against a
-cluster.
+See [`examples/`](examples/) for five working suites:
 
-| Suite       | Cases                          | Demonstrates                                                        |
-|-------------|--------------------------------|--------------------------------------------------------------------|
-| `configmap` | `labels`, `lifecycle`, `patch-ops` | `ensure`, `assert`, and the full set of RFC 6902 `patch` operations |
-| `job`       | `complete`, `report`           | `beforeEach` / `afterEach` hooks, `optional` steps, multi-step cases |
-| `nginx`     | `rollout`, `scale`, `selector` | rollout `wait`, replica `patch`, and `logs` / `exec` by object or label selector |
-| `pod`       | `output`, `probe`, `silent`    | `logs` match policies (`any` / `none`), `exec`, and `delete` with wait |
-| `webapp`    | `deploy`                       | a multi-object app (ConfigMap + Deployment + Service): `match: all` logs, both selector forms, and a retried `assert` |
+| Suite       | Cases                      | Demonstrates                                      | Tags                                |
+|-------------|----------------------------|---------------------------------------------------|-------------------------------------|
+| `configmap` | `lifecycle`, `labels`      | ensure, assert, patch + assert, multi-case suites | `smoke`, `configmap`, `patch`, `labels` |
+| `nginx`     | `rollout`, `scale`, `selector` | ensure, wait, assert replicas, logs (Deployment), exec (config check), patch + scale, `kind` + `labelSelector` | `smoke`, `deployment`, `wait`, `selector` |
+| `job`       | `complete`, `report`       | beforeEach / afterEach hooks, multi-step cases    | `smoke`, `job`, `hooks`, `cleanup`  |
+| `pod`       | `output`, `silent`, `probe` | logs `match: any`, logs `match: none`, exec into a running pod | `smoke`, `pod`, `logs`, `exec` |
+| `webapp`    | `deploy`, `rollout`, `selector` | multi-object stack (ConfigMap + Deployment + Service), logs `match: all`, exec mount check, image rollout via patch + `retry`, `kind` + `labelSelector`, delete with wait | `smoke`, `webapp`, `service`, `selector` |
 
 ## Project structure
 
@@ -438,7 +436,12 @@ internal/scaffold/    Starter suite generation (tests add)
 internal/tools/       filter, logs, patch, safe, workerpool
 internal/errors/      Sentinel errors
 internal/version/     Build-time version info
-examples/             Runnable test suites
+examples/             Working test suites (run with --dry-run, no cluster needed)
+  configmap/          ensure, assert, patch
+  nginx/              wait, assert, logs, exec (Deployment), kind + labelSelector
+  job/                beforeEach/afterEach hooks
+  pod/                logs match policies, exec (Pod)
+  webapp/             multi-object stack, match: all, image rollout, delete with wait
 ```
 
 ## Contributing
