@@ -32,7 +32,7 @@ type Config struct {
 
 // RunEnsure creates or updates the object on the cluster using Server-Side Apply.
 func RunEnsure(ctx context.Context, conf *Config, act *Ensure) (*Report, error) {
-	report := newReport("ensure", Target{Object: act.Object})
+	report := newReport(NameEnsure, Target{Object: act.Object})
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "ensure", "name", conf.Object.GetName(), "gvk", gvk)
 
@@ -55,7 +55,7 @@ func RunEnsure(ctx context.Context, conf *Config, act *Ensure) (*Report, error) 
 // RunDelete removes the object from the cluster. When act.Wait is true it
 // blocks until the object disappears or act.Time elapses.
 func RunDelete(ctx context.Context, conf *Config, act *Delete) (*Report, error) {
-	report := newReport("delete", act.Target)
+	report := newReport(NameDelete, act.Target)
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "delete", "name", conf.Object.GetName(), "gvk", gvk)
 
@@ -78,7 +78,7 @@ func RunDelete(ctx context.Context, conf *Config, act *Delete) (*Report, error) 
 
 // RunWait polls the object until all JQ conditions pass or the timeout expires.
 func RunWait(ctx context.Context, conf *Config, act *Wait) (*Report, error) {
-	report := newReport("wait", act.Target)
+	report := newReport(NameWait, act.Target)
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "wait", "name", conf.Object.GetName(), "gvk", gvk)
 
@@ -101,7 +101,7 @@ func RunWait(ctx context.Context, conf *Config, act *Wait) (*Report, error) {
 
 // RunPatch applies RFC 6902 JSON patches to the live object on the cluster.
 func RunPatch(ctx context.Context, conf *Config, act *Patch) (*Report, error) {
-	report := newReport("patch", act.Target)
+	report := newReport(NamePatch, act.Target)
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "patch", "name", conf.Object.GetName(), "gvk", gvk)
 
@@ -128,7 +128,7 @@ func RunPatch(ctx context.Context, conf *Config, act *Patch) (*Report, error) {
 // to true. When act.Retry is set the check is repeated up to Retry.Attempts
 // times with Retry.Backoff between each attempt.
 func RunAssert(ctx context.Context, conf *Config, act *Assert) (*Report, error) {
-	report := newReport("assert", act.Target)
+	report := newReport(NameAssert, act.Target)
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
 	log := conf.Logger.With("action", "assert", "name", conf.Object.GetName(), "gvk", gvk)
 
@@ -150,7 +150,7 @@ func RunAssert(ctx context.Context, conf *Config, act *Assert) (*Report, error) 
 // RunLogs polls the logs of the named Pod until they contain act.Contains or
 // the timeout expires.
 func RunLogs(ctx context.Context, conf *Config, act *Logs) (*Report, error) {
-	report := newReport("logs", act.Target)
+	report := newReport(NameLogs, act.Target)
 	log := conf.Logger.With("action", "logs", "target", targetName(conf, act.Target))
 
 	if err := applyDelay(ctx, log, act.Delay); err != nil {
@@ -174,7 +174,7 @@ func RunLogs(ctx context.Context, conf *Config, act *Logs) (*Report, error) {
 // RunExec runs act.Command inside the resolved pod and succeeds when the
 // command exits with code zero.
 func RunExec(ctx context.Context, conf *Config, act *Exec) (*Report, error) {
-	report := newReport("exec", act.Target)
+	report := newReport(NameExec, act.Target)
 	log := conf.Logger.With("action", "exec", "target", targetName(conf, act.Target))
 
 	if err := applyDelay(ctx, log, act.Delay); err != nil {

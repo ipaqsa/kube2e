@@ -43,10 +43,12 @@ type Report struct {
 	Reason      string            `json:"reason,omitempty"`
 	StartedAt   time.Time         `json:"startedAt"`
 	FinishedAt  time.Time         `json:"finishedAt"`
+	Duration    engine.Duration   `json:"duration"`
 	Hooks       *HooksReport      `json:"hooks,omitempty"`
 	Passed      int               `json:"passed"`
 	Failed      int               `json:"failed,omitempty"`
 	Total       int               `json:"total"`
+	Stats       engine.Stats      `json:"stats"`
 	Steps       []step.Report     `json:"steps"`
 }
 
@@ -93,6 +95,28 @@ func countSteps(reports []step.Report) (int, int) {
 	return passed, failed
 }
 
+// stepStats sums object stats across step reports.
+func stepStats(reports []step.Report) engine.Stats {
+	var stats engine.Stats
+
+	for _, report := range reports {
+		stats = stats.Add(report.Stats)
+	}
+
+	return stats
+}
+
+// caseStats sums object stats across the case's main steps and hook steps.
+func caseStats(report *Report) engine.Stats {
+	stats := stepStats(report.Steps)
+	if report.Hooks != nil {
+		stats = stats.Add(stepStats(report.Hooks.BeforeEach))
+		stats = stats.Add(stepStats(report.Hooks.AfterEach))
+	}
+
+	return stats
+}
+
 // newReport creates a case report initialized from case metadata.
 func newReport(testCase *Case) *Report {
 	report := &Report{StartedAt: time.Now()}
@@ -115,6 +139,9 @@ func newReport(testCase *Case) *Report {
 // finishReport records the final case state and returns err unchanged.
 func finishReport(report *Report, err error) (*Report, error) {
 	report.FinishedAt = time.Now()
+	report.Duration = engine.Duration(report.FinishedAt.Sub(report.StartedAt))
+	report.Stats = caseStats(report)
+
 	if err != nil {
 		report.State = engine.StateFailed
 		report.Reason = err.Error()

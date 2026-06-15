@@ -13,7 +13,7 @@ type Report struct {
 	Remote     *RemoteReport `json:"remote,omitempty"`
 	StartedAt  time.Time     `json:"startedAt"`
 	FinishedAt time.Time     `json:"finishedAt"`
-	Duration   time.Duration `json:"duration"`
+	Duration   core.Duration `json:"duration"`
 	Passed     int           `json:"passed"`
 	Failed     int           `json:"failed,omitempty"`
 	Total      int           `json:"total"`
@@ -64,7 +64,7 @@ func newReport(cfg *Config) *Report {
 // finishReport records the final aggregate state and returns err unchanged.
 func finishReport(report *Report, err error) (*Report, error) {
 	report.FinishedAt = time.Now()
-	report.Duration = report.FinishedAt.Sub(report.StartedAt)
+	report.Duration = core.Duration(report.FinishedAt.Sub(report.StartedAt))
 
 	return report, err
 }

@@ -73,6 +73,7 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 	actions, err := svc.run(ctx, conf.Step, conf.Objects)
 	report.Actions = actions
 	report.Passed, report.Failed = countActions(actions)
+	report.Stats = objectStats(actions)
 
 	if err != nil && conf.Step.Optional {
 		svc.logger.Warn("optional step failed", "error", err)
@@ -173,7 +174,7 @@ func (s *service) runEnsure(ctx context.Context, st *Step, objects map[string]st
 
 	obj, err := s.render(objects, name, st.Ensure.Values)
 	if err != nil {
-		return failedActionReport("ensure", action.Target{Object: name}, fmt.Errorf("render object %q for ensure: %w", name, err))
+		return failedActionReport(action.NameEnsure, action.Target{Object: name}, fmt.Errorf("render object %q for ensure: %w", name, err))
 	}
 
 	return action.RunEnsure(ctx, s.actionConf(obj), st.Ensure)
@@ -187,7 +188,7 @@ func (s *service) runPatch(ctx context.Context, st *Step, objects map[string]str
 
 	obj, err := s.render(objects, name, nil)
 	if err != nil {
-		return failedActionReport("patch", st.Patch.Target, fmt.Errorf("render object %q for patch: %w", name, err))
+		return failedActionReport(action.NamePatch, st.Patch.Target, fmt.Errorf("render object %q for patch: %w", name, err))
 	}
 
 	return action.RunPatch(ctx, s.actionConf(obj), st.Patch)
@@ -201,7 +202,7 @@ func (s *service) runWait(ctx context.Context, st *Step, objects map[string]stri
 
 	obj, err := s.render(objects, name, nil)
 	if err != nil {
-		return failedActionReport("wait", st.Wait.Target, fmt.Errorf("render object %q for wait: %w", name, err))
+		return failedActionReport(action.NameWait, st.Wait.Target, fmt.Errorf("render object %q for wait: %w", name, err))
 	}
 
 	return action.RunWait(ctx, s.actionConf(obj), st.Wait)
@@ -215,7 +216,7 @@ func (s *service) runAssert(ctx context.Context, st *Step, objects map[string]st
 
 	obj, err := s.render(objects, name, nil)
 	if err != nil {
-		return failedActionReport("assert", st.Assert.Target, fmt.Errorf("render object %q for assert: %w", name, err))
+		return failedActionReport(action.NameAssert, st.Assert.Target, fmt.Errorf("render object %q for assert: %w", name, err))
 	}
 
 	return action.RunAssert(ctx, s.actionConf(obj), st.Assert)
@@ -228,7 +229,7 @@ func (s *service) runLogs(ctx context.Context, st *Step, objects map[string]stri
 
 	conf, err := s.targetConf(st.Logs.Target, objects)
 	if err != nil {
-		return failedActionReport("logs", st.Logs.Target, err)
+		return failedActionReport(action.NameLogs, st.Logs.Target, err)
 	}
 
 	return action.RunLogs(ctx, conf, st.Logs)
@@ -241,7 +242,7 @@ func (s *service) runExec(ctx context.Context, st *Step, objects map[string]stri
 
 	conf, err := s.targetConf(st.Exec.Target, objects)
 	if err != nil {
-		return failedActionReport("exec", st.Exec.Target, err)
+		return failedActionReport(action.NameExec, st.Exec.Target, err)
 	}
 
 	return action.RunExec(ctx, conf, st.Exec)
@@ -270,7 +271,7 @@ func (s *service) runDelete(ctx context.Context, st *Step, objects map[string]st
 
 	obj, err := s.render(objects, name, nil)
 	if err != nil {
-		return failedActionReport("delete", st.Delete.Target, fmt.Errorf("render object %q for delete: %w", name, err))
+		return failedActionReport(action.NameDelete, st.Delete.Target, fmt.Errorf("render object %q for delete: %w", name, err))
 	}
 
 	return action.RunDelete(ctx, s.actionConf(obj), st.Delete)

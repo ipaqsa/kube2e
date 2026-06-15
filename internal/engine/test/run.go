@@ -106,3 +106,14 @@ func countCases(reports []suite.Report) (int, int) {
 
 	return passed, failed
 }
+
+// sumStats sums object stats across case reports.
+func sumStats(reports []suite.Report) engine.Stats {
+	var stats engine.Stats
+
+	for _, report := range reports {
+		stats = stats.Add(report.Stats)
+	}
+
+	return stats
+}
