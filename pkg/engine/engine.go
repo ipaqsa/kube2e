@@ -79,6 +79,8 @@ func runRemote(ctx context.Context, cfg *Config, logger *slog.Logger) (*Report, 
 	}, func(digest, dir string) error {
 		logger.Debug("Extracted image", "digest", digest, "dir", dir)
 
+		report.Remote.Digest = digest
+
 		next := *cfg
 		next.WorkDir = filepath.Join(dir, cfg.WorkDir)
 		next.Remote = Remote{}

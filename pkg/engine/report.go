@@ -25,6 +25,7 @@ type Report struct {
 // RemoteReport records the remote image source used for test execution.
 type RemoteReport struct {
 	Ref      string `json:"ref"`
+	Digest   string `json:"digest,omitempty"`
 	Username string `json:"username,omitempty"`
 }
 

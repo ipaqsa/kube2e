@@ -25,6 +25,7 @@ manage their lifecycle.
 - [Features](#features)
 - [Quickstart](#quickstart)
 - [Example](#example)
+- [Requirements](#requirements)
 - [Installation](#installation)
 - [Building](#building)
 - [Usage](#usage)
@@ -171,6 +172,37 @@ kube2e run ./tests --dry-run
 kube2e run ./tests --kubeconfig ~/.kube/config
 ```
 
+## Requirements
+
+### Kubernetes
+
+| Actions used | Minimum cluster version |
+| --- | --- |
+| Any suite containing `exec` | **v1.30** |
+| Everything else (`ensure`, `patch`, `wait`, `assert`, `logs`, `delete`) | **v1.22** |
+
+The v1.22 floor comes from Server-Side Apply, which `ensure` uses for every
+object with the field manager `kube2e` (see
+[Server-Side Apply](docs/server-side-apply.md)).
+
+The v1.30 floor comes from `exec`, which streams over WebSockets using the
+`v5.channel.k8s.io` subprotocol only — there is no SPDY fallback. Servers gained
+that subprotocol via the `TranslateStreamCloseWebsocketRequests` feature gate:
+alpha and off by default in v1.29, beta and **on by default in v1.30**, stable in
+v1.35. On an older cluster every other action still works; only `exec` fails.
+
+kube2e is built against the Kubernetes v1.37 client libraries
+(`k8s.io/client-go v0.37.0`). Following the upstream
+[version skew policy](https://kubernetes.io/releases/version-skew-policy/), those
+clients are supported against v1.36–v1.38 API servers; older clusters back to the
+floors above are expected to work, since kube2e only uses long-stable APIs.
+
+### Go
+
+Building from source requires **Go 1.27.1** or newer, as declared by the `go`
+directive in `go.mod`. Prebuilt binaries and the container image have no Go
+requirement.
+
 ## Installation
 
 ### go install
@@ -281,8 +313,8 @@ Docker credential keychain is used.
 
 The `--report-file` report contains the run namespace, conflict policy,
 aggregate totals, and nested test, case, step, hook, and action results with
-their state and failure reason. For remote runs it records the image reference
-and registry username, but never the password.
+their state and failure reason. For remote runs it records the image reference,
+the resolved image digest, and the registry username, but never the password.
 
 ### Run with Docker
 
@@ -357,6 +389,7 @@ kube2e tests publish <dir> --remote <image> [flags]
 | `--remote`          | `KUBE2E_TESTS_PUBLISH_REMOTE`          | —       | Image reference to push          |
 | `--remote-user`     | `KUBE2E_TESTS_PUBLISH_REMOTE_USER`     | —       | Registry username for `--remote` |
 | `--remote-password` | `KUBE2E_TESTS_PUBLISH_REMOTE_PASSWORD` | —       | Registry password for `--remote` |
+| `--digest-file`     | `KUBE2E_TESTS_PUBLISH_DIGEST_FILE`     | —       | Write the pushed image digest to this path |
 | `-v, --verbose`     | `KUBE2E_VERBOSE`                       | false   | Include `debug` and `warn` messages |
 
 ```bash
@@ -376,6 +409,20 @@ included, and they are written at the image root. An image built from
 
 ```bash
 kube2e run . --remote ghcr.io/example/kube2e-tests:v0.1.0
+```
+
+On success the digest of the pushed image is logged. Because logs share stdout,
+use `--digest-file` when a pipeline needs to read the digest back: it writes the
+bare `sha256:...` line and nothing else, so it can be pinned to a run and matched
+against the `remote.digest` field of that run's report.
+
+```bash
+kube2e tests publish ./examples \
+  --remote ghcr.io/example/kube2e-tests:v0.1.0 \
+  --digest-file digest.txt
+
+kube2e run . --remote "ghcr.io/example/kube2e-tests@$(cat digest.txt)" \
+  --report-file report.yaml
 ```
 
 ## Suite layout
