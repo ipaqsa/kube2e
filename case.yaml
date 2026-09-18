@@ -214,15 +214,19 @@ steps:
       container: my-container
 
       # Optional. How pod log results are evaluated (default: any).
-      #   any  — succeed when at least one pod's logs contain the string.
-      #   all  — succeed when every pod's logs contain the string.
-      #   none — succeed when no pod's logs contain the string.
+      #   any  — succeed as soon as at least one pod's logs contain the string.
+      #   all  — succeed as soon as every resolved pod's logs contain the string;
+      #          a pod whose logs cannot be read never counts as a match.
+      #   none — watch the logs for the whole timeout and fail as soon as the
+      #          string appears; succeeds only once the window has elapsed.
       match: any
 
       # Optional. How often to fetch and check logs (default: 2s).
       interval: 2s
 
       # Optional. Hard deadline after which Logs returns an error (default: 2m).
+      # With match: none this is the observation window instead — the step always
+      # runs for the full duration, so keep it short.
       timeout: 2m
 
       delay: 0s

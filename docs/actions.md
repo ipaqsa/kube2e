@@ -130,7 +130,7 @@ logs:
   container: <string>   # optional — container name; omit for single-container pods
   match: <any|all|none> # optional — match policy across pods (default: any)
   interval: <duration>  # poll interval  (default: 2s)
-  timeout: <duration>   # hard deadline  (default: 2m)
+  timeout: <duration>   # deadline, or watch window for match: none (default: 2m)
 ```
 
 Fresh logs (last 200 lines) are streamed on every tick. Transient errors (pod
@@ -138,12 +138,18 @@ not yet scheduled, container still initializing) are retried silently.
 
 **Match policies:**
 
-- `any` (default) — succeed when at least one pod's logs contain the string
-- `all` — succeed when every pod's logs contain the string
-- `none` — succeed when no pod's logs contain the string
+- `any` (default) — succeed as soon as at least one pod's logs contain the
+  string. Times out with `ErrLogsNotContain`.
+- `all` — succeed as soon as every resolved pod's logs contain the string. A pod
+  whose logs cannot be read counts as not matching, so an unreadable pod can
+  never make the check pass. Times out with `ErrLogsNotContain`.
+- `none` — watch the logs for the **whole** `timeout` and fail with
+  `ErrLogsContainForbidden` the moment the string appears in any pod. Succeeds
+  only once the window has elapsed without a match.
 
-Returns `ErrLogsNotContain` when the timeout elapses without the condition being
-met.
+Because `none` is an absence assertion, it cannot pass early: the step always
+takes the full `timeout`. Keep that window short (seconds, not the 2m default)
+and set it to the span the string would realistically appear in.
 
 ## `exec`
 

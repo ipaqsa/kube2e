@@ -147,8 +147,8 @@ func RunAssert(ctx context.Context, conf *Config, act *Assert) (*Report, error) 
 	return finishReport(report, err)
 }
 
-// RunLogs polls the logs of the named Pod until they contain act.Contains or
-// the timeout expires.
+// RunLogs checks the logs of the named Pod against act.Contains using the
+// configured match policy.
 func RunLogs(ctx context.Context, conf *Config, act *Logs) (*Report, error) {
 	report := newReport(NameLogs, act.Target)
 	log := conf.Logger.With("action", "logs", "target", targetName(conf, act.Target))

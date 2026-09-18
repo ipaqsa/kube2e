@@ -78,6 +78,7 @@ vendor- or third-party-provided suites directly from a registry.
   `kind` + `labelSelector`.
 - Server-Side Apply with automatic, deterministic per-case cleanup.
 - Tag filtering, parallel suite execution, and `--dry-run` validation.
+- Offline schema validation of case files (`tests validate`).
 - OCI packaging (`tests publish`) and remote execution (`run --remote`).
 - Machine-readable YAML reports and structured JSON logs for CI.
 
@@ -378,6 +379,53 @@ kube2e tests add nginx --dir ./examples
 kube2e run . --dry-run
 ```
 
+### Validate suites
+
+```bash
+kube2e tests validate <dir>
+```
+
+Checks every `cases/*.yaml` file under `<dir>` against the case JSON Schema. The
+schema is compiled into the binary, so nothing is fetched and the cluster is
+never contacted. `<dir>` is either a suite directory (one that contains
+`cases/`) or a parent directory whose immediate children are suites.
+
+```bash
+# Validate every suite under ./examples
+kube2e tests validate ./examples
+
+# Validate a single suite
+kube2e tests validate ./examples/nginx
+```
+
+Each file is reported as `ok` or `FAIL`, with a JSON pointer to every offending
+value:
+
+```
+examples/nginx
+  ok   cases/rollout.yaml
+  FAIL cases/scale.yaml
+       /steps/0/wait/timeout: 'tomorrow' does not match pattern '...'
+       /steps/1/logs/match: value must be one of 'any', 'all', 'none'
+
+2 case files checked, 1 invalid
+```
+
+The command exits non-zero when any file is invalid, which makes it a cheap CI
+gate ahead of a cluster run. The schema catches more than the case parser does:
+the parser accepts any string where a duration or an enum is expected, while the
+schema rejects a malformed `timeout` or an unknown `match` policy. It does not
+replace `run --dry-run`, which additionally renders templates and resolves the
+`objects` map.
+
+The same schema is published at
+[`schemas/case.schema.json`](schemas/case.schema.json). Point an editor at it for
+completion and inline validation — `tests add` writes the modeline for you:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ipaqsa/kube2e/main/schemas/case.schema.json
+```
+
 ### Publish a suite image
 
 ```bash
@@ -461,7 +509,8 @@ Reference documentation for authoring suites lives in [`docs/`](docs/):
 - [Server-Side Apply & cleanup](docs/server-side-apply.md) — field manager,
   conflicts, and per-case resource cleanup.
 
-The fully annotated case file is [`case.yaml`](case.yaml).
+The fully annotated case file is [`case.yaml`](case.yaml), and the JSON
+Schema it is checked against is [`schemas/case.schema.json`](schemas/case.schema.json).
 
 ## Examples
 
@@ -486,9 +535,11 @@ internal/template/    Go template loading and rendering
 internal/kube/        Kubernetes client (SSA, wait, logs, exec)
 internal/image/       OCI image build and pull
 internal/scaffold/    Starter suite generation (tests add)
+internal/validate/    Case schema validation (tests validate)
 internal/tools/       filter, logs, patch, safe, workerpool
 internal/errors/      Sentinel errors
 internal/version/     Build-time version info
+schemas/              Published JSON Schema for case files
 examples/             Working test suites (run with --dry-run, no cluster needed)
   configmap/          ensure, assert, patch
   nginx/              wait, assert, logs, exec (Deployment), kind + labelSelector

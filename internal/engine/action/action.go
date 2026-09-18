@@ -77,14 +77,15 @@ type LogsMatch string
 const (
 	// LogsMatchAny succeeds when at least one pod's logs contain the string (default).
 	LogsMatchAny LogsMatch = "any"
-	// LogsMatchAll succeeds when every pod's logs contain the string.
+	// LogsMatchAll succeeds when every resolved pod's logs contain the string.
 	LogsMatchAll LogsMatch = "all"
-	// LogsMatchNone succeeds when no pod's logs contain the string.
+	// LogsMatchNone watches for the whole timeout and fails as soon as any pod's logs contain the string.
 	LogsMatchNone LogsMatch = "none"
 )
 
-// Logs polls the logs of the named object until they contain Contains or the
-// timeout expires. The object may be a Pod, Deployment, ReplicaSet, or StatefulSet.
+// Logs checks the logs of the named object against Contains using Match. The
+// object may be a Pod, Deployment, ReplicaSet, or StatefulSet. With match none
+// the timeout is the observation window rather than a deadline.
 // Does not support retry — use interval/timeout to tune polling.
 type Logs struct {
 	actionOptions
