@@ -92,6 +92,7 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 	if conf.Namespace != "" {
 		kubeOpts = append(kubeOpts, svckube.WithNamespace(conf.Namespace))
 	}
+
 	if conf.ForceConflicts {
 		kubeOpts = append(kubeOpts, svckube.WithForceConflicts())
 	}
