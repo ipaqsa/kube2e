@@ -1,0 +1,94 @@
+version: v1
+name: all-actions
+description: Exercises every supported action and dynamic value shape
+tags:
+  - smoke
+objects:
+  app: deployment
+hooks:
+  beforeEach:
+    - name: prepare
+      optional: true
+      delete:
+        target:
+          object: app
+        wait: true
+  afterEach:
+    - name: clean-up
+      delete:
+        target:
+          object: app
+steps:
+  - name: exercise-actions
+    ensure:
+      object: app
+      values:
+        replicas: 2
+        image: nginx:1.27-alpine
+        nested:
+          enabled: true
+          ports:
+            - 8080
+      retry:
+        attempts: 3
+        backoff: 500ms
+      delay: 0s
+    patch:
+      target:
+        object: app
+      patches:
+        - op: add
+          path: /metadata/labels/test
+          value: schema
+        - op: copy
+          from: /metadata/labels/test
+          path: /metadata/labels/copied
+        - op: remove
+          path: /metadata/labels/old
+      retry:
+        attempts: 2
+        backoff: 1s
+    wait:
+      target:
+        object: app
+      interval: 2s
+      timeout: 2m
+      conditions:
+        - .status.readyReplicas == .spec.replicas
+    assert:
+      target:
+        object: app
+      conditions:
+        - .spec.replicas == 2
+      retry:
+        attempts: 2
+        backoff: 1s
+    logs:
+      target:
+        kind: Deployment
+        labelSelector: app=demo
+      contains: ready
+      container: app
+      match: all
+      interval: 1s
+      timeout: 30s
+    exec:
+      target:
+        object: app
+      command:
+        - nginx
+        - -t
+      container: app
+      retry:
+        attempts: 2
+        backoff: 1s
+      timeout: 10s
+    delete:
+      target:
+        object: app
+      wait: true
+      interval: 1s
+      timeout: 1m
+      retry:
+        attempts: 2
+        backoff: 1s

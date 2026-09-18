@@ -1,5 +1,9 @@
 package scaffold
 
+// CaseSchemaURL is the canonical location of the case JSON Schema, referenced
+// by the scaffolded case so editors can validate and complete it.
+const CaseSchemaURL = "https://raw.githubusercontent.com/ipaqsa/kube2e/main/schemas/case.schema.json"
+
 // templateYAML is the starter object template written to templates/configmap.yaml.
 const templateYAML = `# Go template, rendered with Sprig functions before each step that uses it.
 # Available variables (reference them as {{ "{{ .name }}" }}):
@@ -18,8 +22,10 @@ data:
 
 // caseYAML is the starter case written to cases/example.yaml. The uncommented
 // fields form a minimal, runnable case; every optional field is shown as a
-// comment so it can be uncommented as needed.
-const caseYAML = `# kube2e test case. The uncommented fields below run as-is; uncomment the
+// comment so it can be uncommented as needed. The leading modeline points
+// editors at the published case schema for completion and validation.
+const caseYAML = `# yaml-language-server: $schema=` + CaseSchemaURL + `
+# kube2e test case. The uncommented fields below run as-is; uncomment the
 # others to use them. Parsing is strict, so an unknown uncommented field errors.
 
 # version must be "v1".
@@ -31,10 +37,6 @@ description: A starter case — edit the steps below and uncomment options as ne
 # A case is skipped unless one of its tags is requested.
 # tags:
 #   - smoke
-
-# namespace is created before the case runs (if absent) and reused by every
-# object that does not set its own. kube2e never deletes it.
-# namespace: kube2e-example
 
 # objects maps a resource key to a template file in templates/ (without .yaml).
 # The key is injected into the template as {{ .name }} and used as the object name.

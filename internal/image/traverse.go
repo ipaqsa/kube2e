@@ -28,7 +28,7 @@ type Remote struct {
 // Traverse pulls the image described by r, extracts its unified filesystem into
 // a temporary directory, calls fn with that directory, and removes the directory
 // when fn returns.
-func Traverse(ctx context.Context, r Remote, fn func(dir string) error) error {
+func Traverse(ctx context.Context, r Remote, fn func(digest, dir string) error) error {
 	img, err := pull(ctx, r)
 	if err != nil {
 		return fmt.Errorf("pull image '%s': %w", r.Ref, err)
@@ -44,7 +44,12 @@ func Traverse(ctx context.Context, r Remote, fn func(dir string) error) error {
 		return fmt.Errorf("extract image '%s': %w", r.Ref, err)
 	}
 
-	return fn(dir)
+	digest, err := img.Digest()
+	if err != nil {
+		return fmt.Errorf("get image digest: %w", err)
+	}
+
+	return fn(digest.String(), dir)
 }
 
 // pull fetches the image using the credentials in r. When Username is empty

@@ -21,6 +21,12 @@ import (
 const (
 	// tagsFlag filters test suites and cases by tag (comma-separated list).
 	tagsFlag = "tags"
+	// namespaceFlag specifies the namespace for namespaced test resources.
+	namespaceFlag = "namespace"
+	// namespaceDefault is the namespace used when the flag is not set.
+	namespaceDefault = "default"
+	// forceConflictsFlag allows Server-Side Apply to take ownership of conflicting fields.
+	forceConflictsFlag = "force-conflicts"
 	// parallelFlag controls how many test suites run concurrently.
 	parallelFlag = "parallel"
 	// remoteFlag specifies the image with tests to run.
@@ -45,7 +51,9 @@ run each one against the configured cluster.
 
 Every immediate subdirectory that contains a cases/ directory is treated as a
 test suite named after that directory. Use --tags to run only cases that carry
-matching tags.
+matching tags. Namespaced resources use --namespace (default: default).
+Server-Side Apply ownership conflicts fail by default; use --force-conflicts to
+take ownership of conflicting fields.
 
 Kubeconfig resolution: --kubeconfig flag -> $KUBECONFIG -> ~/.kube/config -> in-cluster.`,
 		Example: `  # Run all test suites in ./examples
@@ -53,6 +61,12 @@ Kubeconfig resolution: --kubeconfig flag -> $KUBECONFIG -> ~/.kube/config -> in-
 
   # Run only tests and cases tagged "smoke" or "aws"
   kube2e run ./examples --tags smoke,aws
+
+  # Run tests in a dedicated namespace
+  kube2e run ./examples --namespace kube2e
+
+  # Take ownership of fields that conflict during Server-Side Apply
+  kube2e run ./examples --force-conflicts
 
   # Run 4 test suites in parallel
   kube2e run ./examples -n 4
@@ -76,6 +90,14 @@ Kubeconfig resolution: --kubeconfig flag -> $KUBECONFIG -> ~/.kube/config -> in-
 	// --tags: comma-separated list of tags; empty means run all.
 	cmd.Flags().String(tagsFlag, "", "Comma-separated list of tags to run (default: all)")
 	_ = viper.BindPFlag(tagsFlag, cmd.Flags().Lookup(tagsFlag)) //nolint:errcheck // not need to verify it
+
+	// --namespace: namespace for namespaced test resources.
+	cmd.Flags().String(namespaceFlag, namespaceDefault, "Namespace for namespaced test resources")
+	_ = viper.BindPFlag(namespaceFlag, cmd.Flags().Lookup(namespaceFlag)) //nolint:errcheck // not need to verify it
+
+	// --force-conflicts: take ownership of fields that conflict during Server-Side Apply.
+	cmd.Flags().Bool(forceConflictsFlag, false, "Force ownership of fields that conflict during Server-Side Apply")
+	_ = viper.BindPFlag(forceConflictsFlag, cmd.Flags().Lookup(forceConflictsFlag)) //nolint:errcheck // not need to verify it
 
 	// -n / --parallel: number of concurrent test suites (default: 1 = sequential).
 	cmd.Flags().IntP(parallelFlag, "n", 1, "Number of test suites to run concurrently")
@@ -115,6 +137,8 @@ func run(cmd *cobra.Command, args []string) error {
 	remotePassword := viper.GetString(remotePasswordFlag)
 
 	tags := splitTags(viper.GetString(tagsFlag))
+	namespace := viper.GetString(namespaceFlag)
+	forceConflicts := viper.GetBool(forceConflictsFlag)
 	parallel := viper.GetInt(parallelFlag)
 	reportFile := viper.GetString(reportFileFlag)
 
@@ -136,10 +160,12 @@ func run(cmd *cobra.Command, args []string) error {
 		logs.WithFormat(logs.Format(viper.GetString("log-format"))),
 	)
 	cfg := &engine.Config{
-		RestConfig: restConfig,
-		WorkDir:    workDir,
-		Tags:       tags,
-		Parallel:   parallel,
+		RestConfig:     restConfig,
+		WorkDir:        workDir,
+		Tags:           tags,
+		Namespace:      namespace,
+		ForceConflicts: forceConflicts,
+		Parallel:       parallel,
 		Remote: engine.Remote{
 			Ref:      remote,
 			Username: remoteUser,

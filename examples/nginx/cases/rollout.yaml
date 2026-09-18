@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: rollout
 description: Deploy nginx and assert that all replicas become ready
@@ -5,8 +6,6 @@ tags:
   - smoke
   - deployment
   - wait
-namespace: kube2e-nginx
-
 objects:
   nginx: deployment
 

@@ -9,6 +9,7 @@ require (
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/google/go-containerregistry v0.21.6
 	github.com/itchyny/gojq v0.12.19
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0

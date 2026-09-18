@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: deploy
 description: |
@@ -12,8 +13,6 @@ tags:
   - service
   - logs
   - exec
-namespace: kube2e-webapp
-
 # Three objects, three templates. The map key is both the Kubernetes resource
 # name and the .name injected into each render. Steps wire them together by
 # passing the dependency's name through values (config, app).

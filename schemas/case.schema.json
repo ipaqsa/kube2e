@@ -1,0 +1,603 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ipaqsa/kube2e/main/schemas/case.schema.json",
+  "title": "kube2e case",
+  "description": "A kube2e test case containing object templates, hooks, and ordered steps.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "name",
+    "steps"
+  ],
+  "properties": {
+    "version": {
+      "description": "Case schema version.",
+      "type": "string",
+      "enum": [
+        "v1"
+      ]
+    },
+    "name": {
+      "description": "Human-readable case identifier used in logs and reports.",
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "description": "Optional longer description of the case.",
+      "type": "string",
+      "default": ""
+    },
+    "tags": {
+      "description": "Labels used to select the case with the tags filter.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "objects": {
+      "description": "Maps Kubernetes resource names to template base filenames without the .yaml suffix.",
+      "type": "object",
+      "default": {},
+      "propertyNames": {
+        "$ref": "#/$defs/kubernetesResourceName"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "hooks": {
+      "$ref": "#/$defs/hooks"
+    },
+    "steps": {
+      "description": "Ordered steps executed by the case.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/step"
+      }
+    }
+  },
+  "$defs": {
+    "kubernetesDuration": {
+      "description": "A Kubernetes duration using Go duration syntax, for example 500ms, 5s, 2m, or 1h30m.",
+      "type": "string",
+      "format": "kubernetes-duration",
+      "pattern": "^(?:0|[-+]?(?:(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:ns|us|µs|μs|ms|s|m|h))+)$"
+    },
+    "kubernetesResourceName": {
+      "description": "A Kubernetes resource name in DNS subdomain form.",
+      "type": "string",
+      "format": "kubernetes-resource-name",
+      "maxLength": 253,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)*$"
+    },
+    "kubernetesNamespace": {
+      "description": "A Kubernetes namespace name in DNS label form.",
+      "type": "string",
+      "format": "kubernetes-namespace",
+      "maxLength": 63,
+      "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+    },
+    "ociReference": {
+      "description": "An OCI image reference with an optional registry, tag, and sha256 digest.",
+      "type": "string",
+      "format": "oci-reference",
+      "pattern": "^(?:(?:[a-z0-9]+(?:[.-][a-z0-9]+)*)(?::[0-9]+)?/)?(?:[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*/)*[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[A-Fa-f0-9]{64})?$"
+    },
+    "hooks": {
+      "description": "Steps run before and after every regular case step.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "beforeEach": {
+          "description": "Steps run before each regular step.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        },
+        "afterEach": {
+          "description": "Steps run after each regular step, including after a failure.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        }
+      }
+    },
+    "step": {
+      "description": "A named group of actions executed in kube2e action order.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "description": "Step identifier shown in logs and reports.",
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "description": "Optional longer description of the step.",
+          "type": "string",
+          "default": ""
+        },
+        "optional": {
+          "description": "Continue the case when this step fails.",
+          "type": "boolean",
+          "default": false
+        },
+        "ensure": {
+          "$ref": "#/$defs/ensure"
+        },
+        "patch": {
+          "$ref": "#/$defs/patch"
+        },
+        "wait": {
+          "$ref": "#/$defs/wait"
+        },
+        "assert": {
+          "$ref": "#/$defs/assert"
+        },
+        "logs": {
+          "$ref": "#/$defs/logs"
+        },
+        "exec": {
+          "$ref": "#/$defs/exec"
+        },
+        "delete": {
+          "$ref": "#/$defs/delete"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "ensure"
+          ]
+        },
+        {
+          "required": [
+            "patch"
+          ]
+        },
+        {
+          "required": [
+            "wait"
+          ]
+        },
+        {
+          "required": [
+            "assert"
+          ]
+        },
+        {
+          "required": [
+            "logs"
+          ]
+        },
+        {
+          "required": [
+            "exec"
+          ]
+        },
+        {
+          "required": [
+            "delete"
+          ]
+        }
+      ]
+    },
+    "retry": {
+      "description": "Retry policy for an action.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "attempts": {
+          "description": "Total number of executions, including the initial attempt.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 1
+        },
+        "backoff": {
+          "description": "Delay between attempts.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "0s"
+        }
+      }
+    },
+    "objectTarget": {
+      "description": "A templated Kubernetes object referenced by its objects-map key.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object"
+      ],
+      "properties": {
+        "object": {
+          "description": "Key in the case-level objects map.",
+          "$ref": "#/$defs/kubernetesResourceName"
+        }
+      }
+    },
+    "podTarget": {
+      "description": "A templated workload or existing pods selected by kind and labels.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/objectTarget"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "labelSelector"
+          ],
+          "properties": {
+            "kind": {
+              "description": "Kubernetes kind used to resolve running pods.",
+              "type": "string",
+              "enum": [
+                "Pod",
+                "Deployment",
+                "ReplicaSet",
+                "StatefulSet"
+              ]
+            },
+            "labelSelector": {
+              "description": "Kubernetes label selector used to find the target.",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "ensure": {
+      "description": "Create or update a rendered object with Server-Side Apply.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object"
+      ],
+      "properties": {
+        "object": {
+          "description": "Key in the case-level objects map.",
+          "$ref": "#/$defs/kubernetesResourceName"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "values": {
+          "description": "Dynamic values passed to the Go template; arbitrary nested YAML values are allowed.",
+          "type": "object",
+          "default": {},
+          "additionalProperties": true
+        },
+        "delay": {
+          "description": "Delay before the action starts.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "0s"
+        },
+        "timeout": {
+          "description": "Optional action deadline.",
+          "$ref": "#/$defs/kubernetesDuration"
+        }
+      }
+    },
+    "patch": {
+      "description": "Apply RFC 6902 JSON Patch operations to a live object.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "patches"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/objectTarget"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "patches": {
+          "description": "Ordered RFC 6902 operations.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/patchOperation"
+          }
+        },
+        "delay": {
+          "description": "Delay before the action starts.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "0s"
+        },
+        "timeout": {
+          "description": "Optional action deadline.",
+          "$ref": "#/$defs/kubernetesDuration"
+        }
+      }
+    },
+    "patchOperation": {
+      "description": "An RFC 6902 JSON Patch operation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "path"
+      ],
+      "properties": {
+        "op": {
+          "description": "Patch operation.",
+          "type": "string",
+          "enum": [
+            "add",
+            "replace",
+            "remove",
+            "move",
+            "copy",
+            "test"
+          ]
+        },
+        "path": {
+          "description": "JSON Pointer identifying the destination.",
+          "type": "string",
+          "format": "json-pointer"
+        },
+        "from": {
+          "description": "JSON Pointer identifying the source for move and copy.",
+          "type": "string",
+          "format": "json-pointer"
+        },
+        "value": {
+          "description": "Dynamic JSON value used by add, replace, and test."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "move",
+                  "copy"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "from"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "op": {
+                "enum": [
+                  "add",
+                  "replace",
+                  "test"
+                ]
+              }
+            },
+            "required": [
+              "op"
+            ]
+          },
+          "then": {
+            "required": [
+              "value"
+            ]
+          }
+        }
+      ]
+    },
+    "wait": {
+      "description": "Poll an object until all conditions pass or the timeout expires.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/objectTarget"
+        },
+        "interval": {
+          "description": "Polling interval.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "2s"
+        },
+        "conditions": {
+          "description": "JQ expressions that must all evaluate to true.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "delay": {
+          "description": "Delay before the action starts.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "0s"
+        },
+        "timeout": {
+          "description": "Hard deadline for polling.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "2m"
+        }
+      }
+    },
+    "assert": {
+      "description": "Fetch an object and check one or more conditions.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "conditions"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/objectTarget"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "conditions": {
+          "description": "JQ expressions that must all evaluate to true.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "delay": {
+          "description": "Delay before the action starts.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "0s"
+        },
+        "timeout": {
+          "description": "Optional action deadline.",
+          "$ref": "#/$defs/kubernetesDuration"
+        }
+      }
+    },
+    "logs": {
+      "description": "Poll pod logs until the configured match policy succeeds.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "contains"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/podTarget"
+        },
+        "contains": {
+          "description": "Substring searched for in pod logs.",
+          "type": "string",
+          "minLength": 1
+        },
+        "container": {
+          "description": "Container name; omit for the default container.",
+          "type": "string"
+        },
+        "match": {
+          "description": "How matches across multiple pods are combined.",
+          "type": "string",
+          "enum": [
+            "any",
+            "all",
+            "none"
+          ],
+          "default": "any"
+        },
+        "interval": {
+          "description": "Polling interval.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "2s"
+        },
+        "delay": {
+          "description": "Delay before the action starts.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "0s"
+        },
+        "timeout": {
+          "description": "Hard deadline for log polling.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "2m"
+        }
+      }
+    },
+    "exec": {
+      "description": "Run a command inside a resolved pod.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "command"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/podTarget"
+        },
+        "command": {
+          "description": "Command and arguments passed directly to the container.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "container": {
+          "description": "Container name; omit for the default container.",
+          "type": "string"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "delay": {
+          "description": "Delay before the action starts.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "0s"
+        },
+        "timeout": {
+          "description": "Hard deadline for one command execution.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "30s"
+        }
+      }
+    },
+    "delete": {
+      "description": "Delete a Kubernetes object and optionally wait for it to disappear.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/objectTarget"
+        },
+        "retry": {
+          "$ref": "#/$defs/retry"
+        },
+        "wait": {
+          "description": "Wait until the object no longer exists.",
+          "type": "boolean",
+          "default": false
+        },
+        "interval": {
+          "description": "Polling interval used while waiting for deletion.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "2s"
+        },
+        "delay": {
+          "description": "Delay before the action starts.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "0s"
+        },
+        "timeout": {
+          "description": "Hard deadline while waiting for deletion.",
+          "$ref": "#/$defs/kubernetesDuration",
+          "default": "2m"
+        }
+      }
+    }
+  }
+}

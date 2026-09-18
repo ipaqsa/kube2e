@@ -1,0 +1,8 @@
+version: v1
+name: invalid-duration
+steps:
+  - name: wait
+    wait:
+      target:
+        object: app
+      timeout: tomorrow

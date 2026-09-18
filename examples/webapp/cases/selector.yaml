@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: selector
 description: |
@@ -12,8 +13,6 @@ tags:
   - exec
   - selector
   - delete
-namespace: kube2e-webapp
-
 objects:
   webapp-config: configmap
   webapp: deployment

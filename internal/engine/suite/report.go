@@ -36,7 +36,6 @@ type Report struct {
 	Path        string            `json:"path"`
 	Name        string            `json:"name"`
 	Description string            `json:"description,omitempty"`
-	Namespace   string            `json:"namespace,omitempty"`
 	Tags        []string          `json:"tags,omitempty"`
 	Objects     map[string]string `json:"objects,omitempty"`
 	State       engine.State      `json:"state"`
@@ -128,7 +127,6 @@ func newReport(testCase *Case) *Report {
 	report.Path = testCase.Path
 	report.Name = testCase.Name
 	report.Description = testCase.Description
-	report.Namespace = testCase.Namespace
 	report.Tags = testCase.Tags
 	report.Objects = testCase.Objects
 	report.Total = len(testCase.Steps)

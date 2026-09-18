@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: lifecycle
 description: Create a ConfigMap, verify its data, then bump the version via a patch
@@ -5,8 +6,6 @@ tags:
   - smoke
   - configmap
   - patch
-namespace: kube2e-configmap
-
 objects:
   app-config: configmap
 

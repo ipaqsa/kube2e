@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: report
 description: Run a reporting job and assert it completed without failures
@@ -5,8 +6,6 @@ tags:
   - smoke
   - job
   - wait
-namespace: kube2e-job
-
 objects:
   reporter: job
 

@@ -54,7 +54,12 @@ func Build(ctx context.Context, r Remote, path string, logger *slog.Logger) erro
 		return fmt.Errorf("append layer: %w", err)
 	}
 
-	logger.Info("push tests image", "image", r.Ref, "tests", len(dirs))
+	digest, err := img.Digest()
+	if err != nil {
+		return fmt.Errorf("get image digest: %w", err)
+	}
+
+	logger.Info("push tests image", "image", r.Ref, "tests", len(dirs), "digest", digest.String())
 
 	if err = remote.Write(ref, img, registryOptions(ctx, r)...); err != nil {
 		return fmt.Errorf("push image '%s': %w", r.Ref, err)

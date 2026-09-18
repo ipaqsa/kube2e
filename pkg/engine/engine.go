@@ -30,6 +30,12 @@ type Config struct {
 	// least one matching tag are executed. See case.yaml for how to assign tags.
 	Tags []string
 
+	// Namespace is the namespace used for namespaced test resources.
+	Namespace string
+
+	// ForceConflicts allows Server-Side Apply to take ownership of conflicting fields.
+	ForceConflicts bool
+
 	// Parallel controls how many test suite directories are executed concurrently.
 	// Values less than 2 mean sequential execution.
 	Parallel int
@@ -70,7 +76,9 @@ func runRemote(ctx context.Context, cfg *Config, logger *slog.Logger) (*Report, 
 		Ref:      cfg.Remote.Ref,
 		Username: cfg.Remote.Username,
 		Password: cfg.Remote.Password,
-	}, func(dir string) error {
+	}, func(digest, dir string) error {
+		logger.Debug("Extracted image", "digest", digest, "dir", dir)
+
 		next := *cfg
 		next.WorkDir = filepath.Join(dir, cfg.WorkDir)
 		next.Remote = Remote{}
@@ -130,16 +138,18 @@ func runLocal(ctx context.Context, cfg *Config, logger *slog.Logger) (*Report, e
 	runErr := workerpool.Do(ctx, max(cfg.Parallel, 1), func(ctx context.Context, dir string) error {
 		// Derive a per-test logger; reassigning the shared logger would
 		// accumulate "name" attributes and race across parallel workers.
-		log := logger.With("name", filepath.Base(dir))
+		log := logger.With("name", filepath.Base(dir), "namespace", cfg.Namespace)
 
 		log.Info("run test")
 
 		conf := &test.Config{
-			RestConf: cfg.RestConfig,
-			TestDir:  dir,
-			Tags:     cfg.Tags,
-			DryRun:   cfg.DryRun,
-			Logger:   log,
+			RestConf:       cfg.RestConfig,
+			TestDir:        dir,
+			Tags:           cfg.Tags,
+			Namespace:      cfg.Namespace,
+			ForceConflicts: cfg.ForceConflicts,
+			DryRun:         cfg.DryRun,
+			Logger:         log,
 		}
 
 		testReport, testErr := test.Run(ctx, conf)

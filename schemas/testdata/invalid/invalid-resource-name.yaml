@@ -1,0 +1,8 @@
+version: v1
+name: invalid-resource-name
+objects:
+  Invalid_Name: deployment
+steps:
+  - name: deploy
+    ensure:
+      object: Invalid_Name

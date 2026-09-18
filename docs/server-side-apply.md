@@ -20,6 +20,11 @@ Because kube2e applies with the field manager `kube2e`, fields owned by another
 field manager — a controller, a separate `kubectl apply`, or an operator — can
 produce **apply conflicts**, which fail the test.
 
+This is the default safety policy: kube2e does not take ownership from another
+field manager automatically. Pass `--force-conflicts` (or set
+`KUBE2E_FORCE_CONFLICTS=true`) to enable `ForceOwnership` and let kube2e acquire
+conflicting fields.
+
 Author templates so kube2e owns the fields it sets, and avoid taking ownership
 of fields a controller manages (for example, do not set `spec.replicas` on a
 Deployment that an HPA scales).
@@ -27,9 +32,9 @@ Deployment that an HPA scales).
 ## Per-case cleanup
 
 After each case finishes — whether it passed or failed — kube2e deletes every
-object recorded in the applied cache. If the case declared a `namespace`, kube2e
-creates it when absent but **never deletes it**: the namespace is excluded from
-the applied cache so cleanup leaves it in place. This avoids tearing down a
+object recorded in the applied cache. kube2e creates the namespace selected by
+`--namespace` when absent but **never deletes it**: the namespace is excluded
+from the applied cache so cleanup leaves it in place. This avoids tearing down a
 namespace kube2e may not own (e.g. a pre-existing user namespace); remove it
 yourself if your test created it solely for its own use.
 

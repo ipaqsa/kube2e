@@ -1,0 +1,7 @@
+version: v1
+name: minimal
+steps:
+  - name: remove-object
+    delete:
+      target:
+        object: example

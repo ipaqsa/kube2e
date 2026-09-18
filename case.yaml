@@ -16,10 +16,6 @@ tags:
   - smoke
   - aws
 
-# Optional. Kubernetes namespace to create before the case runs and delete after
-# cleanup. Objects without an explicit namespace inherit this value.
-namespace: my-namespace
-
 # Optional. Case-level object registry: maps a resource name to the template
 # base-filename (without .yaml) that renders it.
 #
@@ -80,6 +76,7 @@ steps:
     # ── Ensure ───────────────────────────────────────────────────────────────
     # Create or update the rendered object using Kubernetes Server-Side Apply.
     # Requires k8s v1.22+. Field manager is "kube2e".
+    # Ownership conflicts fail unless run with --force-conflicts.
     # The object is recorded in the cleanup cache and deleted after the case ends.
     ensure:
       # Required. Key from the case-level objects map.

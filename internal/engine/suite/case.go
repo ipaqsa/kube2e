@@ -45,12 +45,6 @@ type Case struct {
 	// The case is skipped unless at least one of its tags matches the requested tags.
 	Tags []string `yaml:"tags" json:"tags"`
 
-	// Namespace is the Kubernetes namespace to create before the case runs if it
-	// does not already exist. It is never deleted by kube2e, so a pre-existing
-	// user namespace is left intact. Objects without an explicit namespace inherit
-	// this value.
-	Namespace string `yaml:"namespace" json:"namespace"`
-
 	// Objects maps a resource name to its template base-filename (without .yaml).
 	// The key becomes the Kubernetes object name injected into every render.
 	// Steps reference an entry by name; Ensure is the only action that uses Values.

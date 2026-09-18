@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: labels
 description: Add a metadata label to a ConfigMap and assert it is reflected on the live object
@@ -5,8 +6,6 @@ tags:
   - configmap
   - patch
   - labels
-namespace: kube2e-configmap
-
 objects:
   app-config: configmap
 
