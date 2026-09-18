@@ -787,9 +787,9 @@ type LogsMatch string
 const (
 	// LogsMatchAny succeeds when at least one pod's logs contain the string (default).
 	LogsMatchAny LogsMatch = "any"
-	// LogsMatchAll succeeds when every pod's logs contain the string.
+	// LogsMatchAll succeeds when every resolved pod's logs contain the string.
 	LogsMatchAll LogsMatch = "all"
-	// LogsMatchNone succeeds when no pod's logs contain the string.
+	// LogsMatchNone watches for the whole timeout and fails as soon as any pod's logs contain the string.
 	LogsMatchNone LogsMatch = "none"
 )
 
@@ -821,7 +821,8 @@ func WithLogsInterval(interval time.Duration) LogsOptionFunc {
 	}
 }
 
-// WithLogsTimeout sets a hard deadline for log polling. Zero values are ignored.
+// WithLogsTimeout sets a hard deadline for log polling, or the observation
+// window for the none policy. Zero values are ignored.
 func WithLogsTimeout(timeout time.Duration) LogsOptionFunc {
 	return func(o *LogsOptions) {
 		if timeout > 0 {
@@ -976,10 +977,12 @@ func (s *Service) workloadPodSelector(ctx context.Context, kind, labelSelector, 
 	return matchLabelsSelector(&list.Items[0])
 }
 
-// LogsContains polls the logs of target until they contain expected, the context
-// is canceled, or the timeout expires. The target is a Pod or workload object, or
-// a kind plus label selector — both resolve to their pods. Returns
-// ErrLogsNotContain on timeout.
+// LogsContains checks the logs of target against expected using the configured
+// match policy. The target is a Pod or workload object, or a kind plus label
+// selector — both resolve to their pods. The any and all policies poll until the
+// string shows up and return ErrLogsNotContain on timeout; the none policy
+// watches for the whole timeout and returns ErrLogsContainForbidden as soon as
+// the string shows up.
 func (s *Service) LogsContains(ctx context.Context, target PodTarget, expected string, opts ...LogsOptionFunc) error {
 	if err := target.validate(); err != nil {
 		return err
@@ -996,68 +999,129 @@ func (s *Service) LogsContains(ctx context.Context, target PodTarget, expected s
 		opt(logsOpts)
 	}
 
-	desc := target.describe()
-	s.logger.Debug("polling logs", "target", desc, "contains", expected)
-
 	tail := defaultLogsTailLines
 	podLogOpts := &corev1.PodLogOptions{Container: logsOpts.container, TailLines: &tail}
 
-	pollErr := wait.PollUntilContextTimeout(ctx, logsOpts.interval, logsOpts.timeout, true,
+	if logsOpts.match == LogsMatchNone {
+		return s.logsAbsent(ctx, target, expected, logsOpts, podLogOpts)
+	}
+
+	return s.logsPresent(ctx, target, expected, logsOpts, podLogOpts)
+}
+
+// logsPresent polls until the any/all policy is satisfied, the context is
+// canceled, or the timeout expires.
+func (s *Service) logsPresent(
+	ctx context.Context, target PodTarget, expected string, opts *LogsOptions, logOpts *corev1.PodLogOptions,
+) error {
+	desc := target.describe()
+	s.logger.Debug("polling logs", "target", desc, "contains", expected, "match", string(opts.match))
+
+	pollErr := wait.PollUntilContextTimeout(ctx, opts.interval, opts.timeout, true,
 		func(ctx context.Context) (bool, error) {
-			reqs, err := s.resolvePodsForLogs(ctx, target, podLogOpts)
-			if err != nil {
-				s.logger.Debug("could not resolve pods for logs", "target", desc, "error", err)
-
+			matched, resolved := s.countLogMatches(ctx, target, expected, logOpts)
+			if resolved == 0 {
 				return false, nil
 			}
 
-			matched, checked := 0, 0
-
-			for _, req := range reqs {
-				stream, streamErr := req.Stream(ctx)
-				if streamErr != nil {
-					s.logger.Debug("pod logs not yet available", "target", desc, "error", streamErr)
-
-					continue
-				}
-
-				data, readErr := io.ReadAll(stream)
-
-				if err := stream.Close(); err != nil {
-					s.logger.Debug("close pod log stream error", "target", desc, "error", err)
-				}
-
-				if readErr != nil {
-					s.logger.Debug("read pod logs error", "target", desc, "error", readErr)
-
-					continue
-				}
-
-				checked++
-
-				if strings.Contains(string(data), expected) {
-					matched++
-				}
+			// Pods whose logs could not be read count as resolved but never as
+			// matched, so an unread pod keeps the all policy pending instead of
+			// shrinking the set it is checked against.
+			if opts.match == LogsMatchAll {
+				return matched == resolved, nil
 			}
 
-			if checked == 0 {
-				return false, nil
-			}
-
-			switch logsOpts.match {
-			case LogsMatchAll:
-				return matched == checked, nil
-			case LogsMatchNone:
-				return matched == 0, nil
-			default:
-				return matched > 0, nil
-			}
+			return matched > 0, nil
 		})
 	if pollErr != nil {
 		return fmt.Errorf("%w: %q not found in logs of %s", interrors.ErrLogsNotContain, expected, desc)
 	}
 
 	return nil
+}
+
+// logsAbsent watches the logs of target for the whole timeout and fails as soon
+// as forbidden appears. Success is the poll running out its window, so a single
+// clean sample is never enough.
+func (s *Service) logsAbsent(
+	ctx context.Context, target PodTarget, forbidden string, opts *LogsOptions, logOpts *corev1.PodLogOptions,
+) error {
+	desc := target.describe()
+	s.logger.Debug("watching logs", "target", desc, "forbidden", forbidden, "window", opts.timeout)
+
+	pollErr := wait.PollUntilContextTimeout(ctx, opts.interval, opts.timeout, true,
+		func(ctx context.Context) (bool, error) {
+			matched, _ := s.countLogMatches(ctx, target, forbidden, logOpts)
+
+			return matched > 0, nil
+		})
+
+	switch {
+	case pollErr == nil:
+		// The poll only stops early when the condition held: the string appeared.
+		return fmt.Errorf("%w: %q found in logs of %s", interrors.ErrLogsContainForbidden, forbidden, desc)
+	case ctx.Err() != nil:
+		// The caller gave up before the window elapsed, so absence is unproven.
+		return fmt.Errorf("watch logs of %s: %w", desc, ctx.Err())
+	case errors.Is(pollErr, context.DeadlineExceeded):
+		// The window elapsed without a match, which is the only way to pass.
+		return nil
+	default:
+		return fmt.Errorf("watch logs of %s: %w", desc, pollErr)
+	}
+}
+
+// countLogMatches fetches the current logs of every pod of target and reports
+// how many contain expected out of how many pods were resolved. Pods whose logs
+// cannot be read count as resolved but never as matched.
+func (s *Service) countLogMatches(
+	ctx context.Context, target PodTarget, expected string, logOpts *corev1.PodLogOptions,
+) (int, int) {
+	desc := target.describe()
+
+	reqs, err := s.resolvePodsForLogs(ctx, target, logOpts)
+	if err != nil {
+		s.logger.Debug("could not resolve pods for logs", "target", desc, "error", err)
+
+		return 0, 0
+	}
+
+	matched := 0
+
+	for _, req := range reqs {
+		if s.logsContain(ctx, req, expected, desc) {
+			matched++
+		}
+	}
+
+	return matched, len(reqs)
+}
+
+// logsContain reports whether the logs served by req contain expected. Read
+// errors are transient by nature (pod not scheduled, container initializing) and
+// are logged and reported as no match.
+func (s *Service) logsContain(ctx context.Context, req *rest.Request, expected, desc string) bool {
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		s.logger.Debug("pod logs not yet available", "target", desc, "error", err)
+
+		return false
+	}
+
+	defer func() {
+		if closeErr := stream.Close(); closeErr != nil {
+			s.logger.Debug("close pod log stream error", "target", desc, "error", closeErr)
+		}
+	}()
+
+	data, err := io.ReadAll(stream)
+	if err != nil {
+		s.logger.Debug("read pod logs error", "target", desc, "error", err)
+
+		return false
+	}
+
+	return strings.Contains(string(data), expected)
 }
 
 // resolvePodsForLogs builds a log request for every available pod of target.

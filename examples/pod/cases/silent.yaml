@@ -25,5 +25,7 @@ steps:
         object: checker
       container: runner
       contains: "error"
+      # match: none watches for the full timeout below and fails the moment
+      # "error" shows up, so this step always takes 10s.
       match: none
       timeout: 10s

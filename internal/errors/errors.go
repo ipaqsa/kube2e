@@ -14,6 +14,8 @@ var (
 	ErrNilObject = errors.New("object is nil")
 	// ErrLogsNotContain is returned when pod logs do not contain the expected string before the timeout.
 	ErrLogsNotContain = errors.New("logs do not contain expected string")
+	// ErrLogsContainForbidden is returned when pod logs contain a string the match policy forbids.
+	ErrLogsContainForbidden = errors.New("logs contain forbidden string")
 	// ErrObjectNoGVK is returned when an object has an empty GroupVersionKind.
 	ErrObjectNoGVK = errors.New("object GVK is empty")
 	// ErrNilRestConfig is returned when a nil *rest.Config is passed to kube.New.

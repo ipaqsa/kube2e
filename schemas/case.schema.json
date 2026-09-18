@@ -498,7 +498,7 @@
           "type": "string"
         },
         "match": {
-          "description": "How matches across multiple pods are combined.",
+          "description": "How matches across multiple pods are combined: any — at least one pod's logs contain the string; all — every resolved pod's logs contain it (an unreadable pod never counts as a match); none — the string must not appear during the whole timeout window.",
           "type": "string",
           "enum": [
             "any",
@@ -518,7 +518,7 @@
           "default": "0s"
         },
         "timeout": {
-          "description": "Hard deadline for log polling.",
+          "description": "Hard deadline for log polling; with match none it is the observation window and the action always runs for its full duration.",
           "$ref": "#/$defs/kubernetesDuration",
           "default": "2m"
         }
