@@ -30,6 +30,9 @@ objects without an explicit namespace inherit this value.
   `.yaml`).
 - Templates are loaded from `<suite-dir>/templates/`; the directory is optional.
 - Cases execute in alphabetical filename order.
+- Every field below is described by [`schemas/case.schema.json`](../schemas/case.schema.json).
+  Check a directory of suites against it with `kube2e tests validate <dir>`,
+  which needs no cluster.
 
 ## Case file reference (`cases/<name>.yaml`)
 

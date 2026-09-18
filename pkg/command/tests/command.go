@@ -6,6 +6,7 @@ import (
 
 	cmdadd "github.com/ipaqsa/kube2e/pkg/command/tests/add"
 	cmdpublish "github.com/ipaqsa/kube2e/pkg/command/tests/publish"
+	cmdvalidate "github.com/ipaqsa/kube2e/pkg/command/tests/validate"
 )
 
 // NewTestsCommand returns the "tests" command with suite management subcommands.
@@ -15,12 +16,13 @@ func NewTestsCommand() *cobra.Command {
 		Short: "Manage kube2e test suites",
 		Long: `Manage kube2e test suites.
 
-Use subcommands to scaffold, package, and publish test suites.`,
+Use subcommands to scaffold, validate, package, and publish test suites.`,
 		Args: cobra.NoArgs,
 	}
 
 	cmd.AddCommand(cmdadd.NewAddCommand())
 	cmd.AddCommand(cmdpublish.NewPublishCommand())
+	cmd.AddCommand(cmdvalidate.NewValidateCommand())
 
 	return cmd
 }
