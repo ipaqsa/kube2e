@@ -25,6 +25,12 @@ type Config struct {
 	// Tags is the requested tag filter from the CLI. Empty means run all.
 	Tags []string
 
+	// Namespace is the namespace used for namespaced test resources.
+	Namespace string
+
+	// ForceConflicts allows Server-Side Apply to take ownership of conflicting fields.
+	ForceConflicts bool
+
 	Logger *slog.Logger
 
 	DryRun bool
@@ -37,7 +43,7 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 	test := newTest(conf.TestDir)
 	report := newReport(test)
 
-	logger := conf.Logger.With("test", test.Name)
+	logger := conf.Logger.With("test", test.Name, "namespace", conf.Namespace)
 	annotations := map[string]string{testAnnotation: test.Name}
 
 	tmpl, err := template.NewManager(test.TemplatesDir(), logger)
@@ -52,13 +58,15 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 		logger.Info("run case", "progress", progress, "path", casePath)
 
 		caseReport, caseErr := suite.Run(ctx, &suite.Config{
-			RestConf:    conf.RestConf,
-			DryRun:      conf.DryRun,
-			Template:    tmpl,
-			Path:        casePath,
-			Tags:        conf.Tags,
-			Annotations: annotations,
-			Logger:      logger,
+			RestConf:       conf.RestConf,
+			DryRun:         conf.DryRun,
+			ForceConflicts: conf.ForceConflicts,
+			Template:       tmpl,
+			Path:           casePath,
+			Tags:           conf.Tags,
+			Namespace:      conf.Namespace,
+			Annotations:    annotations,
+			Logger:         logger,
 		})
 		if caseReport != nil {
 			report.Cases = append(report.Cases, *caseReport)

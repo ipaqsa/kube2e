@@ -1,0 +1,8 @@
+version: v1
+name: unknown-field
+unexpected: true
+steps:
+  - name: remove-object
+    delete:
+      target:
+        object: example

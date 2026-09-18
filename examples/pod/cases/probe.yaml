@@ -1,11 +1,10 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: probe
 description: Run a long-lived pod and exec into it to verify the environment
 tags:
   - pod
   - exec
-namespace: kube2e-pod
-
 objects:
   runner: pod
 

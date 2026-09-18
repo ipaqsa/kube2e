@@ -1,0 +1,8 @@
+version: v1
+name: wrong-type
+steps:
+  - name: remove-object
+    optional: "yes"
+    delete:
+      target:
+        object: example

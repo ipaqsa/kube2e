@@ -13,8 +13,9 @@ The first failure aborts the step unless the step is `optional: true`. See
 ## `ensure`
 
 Create or update the object using Server-Side Apply (field manager `kube2e`).
-Requires Kubernetes v1.22+. The object is cached for automatic cleanup. See
-[Server-Side Apply & cleanup](server-side-apply.md).
+Ownership conflicts fail by default; `run --force-conflicts` lets kube2e take
+ownership of conflicting fields. Requires Kubernetes v1.22+. The object is
+cached for automatic cleanup. See [Server-Side Apply & cleanup](server-side-apply.md).
 
 ```yaml
 ensure:

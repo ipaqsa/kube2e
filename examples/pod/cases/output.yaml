@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: output
 description: Run a one-shot pod and assert its log output contains the expected string
@@ -5,8 +6,6 @@ tags:
   - smoke
   - pod
   - logs
-namespace: kube2e-pod
-
 objects:
   runner: pod
 

@@ -9,20 +9,23 @@ import (
 
 // Report records the execution result of all discovered test directories.
 type Report struct {
-	DryRun     bool          `json:"dryRun"`
-	Remote     *RemoteReport `json:"remote,omitempty"`
-	StartedAt  time.Time     `json:"startedAt"`
-	FinishedAt time.Time     `json:"finishedAt"`
-	Duration   core.Duration `json:"duration"`
-	Passed     int           `json:"passed"`
-	Failed     int           `json:"failed,omitempty"`
-	Total      int           `json:"total"`
-	Tests      []test.Report `json:"tests"`
+	DryRun         bool          `json:"dryRun"`
+	Namespace      string        `json:"namespace"`
+	ForceConflicts bool          `json:"forceConflicts,omitempty"`
+	Remote         *RemoteReport `json:"remote,omitempty"`
+	StartedAt      time.Time     `json:"startedAt"`
+	FinishedAt     time.Time     `json:"finishedAt"`
+	Duration       core.Duration `json:"duration"`
+	Passed         int           `json:"passed"`
+	Failed         int           `json:"failed,omitempty"`
+	Total          int           `json:"total"`
+	Tests          []test.Report `json:"tests"`
 }
 
 // RemoteReport records the remote image source used for test execution.
 type RemoteReport struct {
 	Ref      string `json:"ref"`
+	Digest   string `json:"digest,omitempty"`
 	Username string `json:"username,omitempty"`
 }
 
@@ -48,8 +51,10 @@ func countTests(reports []test.Report) (int, int) {
 // newReport creates an aggregate report initialized from the engine config.
 func newReport(cfg *Config) *Report {
 	report := &Report{
-		DryRun:    cfg.DryRun,
-		StartedAt: time.Now(),
+		DryRun:         cfg.DryRun,
+		Namespace:      cfg.Namespace,
+		ForceConflicts: cfg.ForceConflicts,
+		StartedAt:      time.Now(),
 	}
 	if cfg.Remote.Ref != "" {
 		report.Remote = &RemoteReport{

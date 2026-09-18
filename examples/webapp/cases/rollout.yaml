@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: rollout
 description: |
@@ -10,8 +11,6 @@ tags:
   - configmap
   - patch
   - wait
-namespace: kube2e-webapp
-
 objects:
   webapp-config: configmap
   webapp: deployment

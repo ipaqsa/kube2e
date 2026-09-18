@@ -26,41 +26,47 @@ const (
 	templatesDirName = "templates"
 )
 
-// Build packages test directories from path into an image and pushes it to r.
-func Build(ctx context.Context, r Remote, path string, logger *slog.Logger) error {
+// Build packages test directories from path into an image, pushes it to r, and
+// returns the digest of the pushed image.
+func Build(ctx context.Context, r Remote, path string, logger *slog.Logger) (string, error) {
 	ref, err := name.ParseReference(r.Ref)
 	if err != nil {
-		return fmt.Errorf("parse reference: %w", err)
+		return "", fmt.Errorf("parse reference: %w", err)
 	}
 
 	dirs, err := findTestDirs(path)
 	if err != nil {
-		return fmt.Errorf("find test dirs: %w", err)
+		return "", fmt.Errorf("find test dirs: %w", err)
 	}
 
 	layerPath, err := writeTestLayer(path, dirs)
 	if err != nil {
-		return fmt.Errorf("write test layer: %w", err)
+		return "", fmt.Errorf("write test layer: %w", err)
 	}
 	defer os.Remove(layerPath) //nolint:errcheck // best-effort cleanup for a temp file
 
 	layer, err := tarball.LayerFromFile(layerPath)
 	if err != nil {
-		return fmt.Errorf("create layer: %w", err)
+		return "", fmt.Errorf("create layer: %w", err)
 	}
 
 	img, err := mutate.AppendLayers(empty.Image, layer)
 	if err != nil {
-		return fmt.Errorf("append layer: %w", err)
+		return "", fmt.Errorf("append layer: %w", err)
 	}
 
-	logger.Info("push tests image", "image", r.Ref, "tests", len(dirs))
+	digest, err := img.Digest()
+	if err != nil {
+		return "", fmt.Errorf("get image digest: %w", err)
+	}
+
+	logger.Info("push tests image", "image", r.Ref, "tests", len(dirs), "digest", digest.String())
 
 	if err = remote.Write(ref, img, registryOptions(ctx, r)...); err != nil {
-		return fmt.Errorf("push image '%s': %w", r.Ref, err)
+		return "", fmt.Errorf("push image '%s': %w", r.Ref, err)
 	}
 
-	return nil
+	return digest.String(), nil
 }
 
 // findTestDirs returns immediate child directories that contain a cases/ subdirectory.

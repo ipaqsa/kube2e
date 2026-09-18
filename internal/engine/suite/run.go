@@ -39,6 +39,9 @@ type Config struct {
 	RestConf *rest.Config
 	DryRun   bool
 
+	// ForceConflicts allows Server-Side Apply to take ownership of conflicting fields.
+	ForceConflicts bool
+
 	Template *template.Manager
 
 	Path string
@@ -46,6 +49,9 @@ type Config struct {
 	// Tags is the requested tag filter. When non-empty the case is skipped unless
 	// it has at least one matching tag.
 	Tags []string
+
+	// Namespace is the namespace used for namespaced test resources.
+	Namespace string
 
 	// Annotations carries engine-injected tracing annotations (e.g. test name).
 	Annotations map[string]string
@@ -82,9 +88,13 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 
 	svc := new(service)
 
-	kubeOpts := make([]svckube.Option, 0, 2)
-	if testCase.Namespace != "" {
-		kubeOpts = append(kubeOpts, svckube.WithNamespace(testCase.Namespace))
+	kubeOpts := make([]svckube.Option, 0, 3)
+	if conf.Namespace != "" {
+		kubeOpts = append(kubeOpts, svckube.WithNamespace(conf.Namespace))
+	}
+
+	if conf.ForceConflicts {
+		kubeOpts = append(kubeOpts, svckube.WithForceConflicts())
 	}
 
 	if conf.DryRun {
@@ -109,21 +119,21 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 	svc.logger.Debug("case service initialized")
 
 	var namespace *corev1.Namespace
-	if testCase.Namespace != "" {
+	if conf.Namespace != "" {
 		namespace = &corev1.Namespace{
 			TypeMeta: metav1.TypeMeta{
 				APIVersion: "v1",
 				Kind:       "Namespace",
 			},
 			ObjectMeta: metav1.ObjectMeta{
-				Name: testCase.Namespace,
+				Name: conf.Namespace,
 			},
 		}
 
 		svc.logger.Debug("ensure namespace", "name", namespace.Name)
 
 		if err = svc.kube.Ensure(ctx, namespace, svckube.WithEnsureToCache(false)); err != nil {
-			return finishReport(report, fmt.Errorf("ensure namespace '%s': %w", testCase.Namespace, err))
+			return finishReport(report, fmt.Errorf("ensure namespace '%s': %w", conf.Namespace, err))
 		}
 	}
 
@@ -255,7 +265,7 @@ func (s *service) runStep(ctx context.Context, total, idx int, testCase *Case, s
 		actions = st.CountActions()
 	}
 
-	log := s.logger.With("name", name, "actions", actions, "namespace", testCase.Namespace)
+	log := s.logger.With("name", name, "actions", actions)
 
 	progress := fmt.Sprintf("[%d/%d]", idx, total)
 	log.Info("run step", "progress", progress, "phase", phase)

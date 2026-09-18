@@ -1,0 +1,9 @@
+version: v1
+name: invalid-enum
+steps:
+  - name: check-logs
+    logs:
+      target:
+        object: app
+      contains: ready
+      match: some

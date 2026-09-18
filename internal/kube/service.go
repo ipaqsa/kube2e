@@ -54,15 +54,16 @@ const (
 // Service is the primary Kubernetes client for kube2e. It maintains a shared
 // applied-resource cache used for automatic cleanup after each test case.
 type Service struct {
-	cli       client.Client
-	clientset kubernetes.Interface
-	restCfg   *rest.Config
-	namespace string
-	poller    *polling.StatusPoller
-	disc      discovery.DiscoveryInterface
-	applied   *safe.Store[client.Object]
-	logger    *slog.Logger
-	dryRun    bool
+	cli            client.Client
+	clientset      kubernetes.Interface
+	restCfg        *rest.Config
+	namespace      string
+	poller         *polling.StatusPoller
+	disc           discovery.DiscoveryInterface
+	applied        *safe.Store[client.Object]
+	logger         *slog.Logger
+	dryRun         bool
+	forceConflicts bool
 }
 
 // Option configures a Service at construction time.
@@ -83,6 +84,13 @@ func WithNamespace(namespace string) Option {
 func WithDryRun() Option {
 	return func(service *Service) {
 		service.dryRun = true
+	}
+}
+
+// WithForceConflicts allows Server-Side Apply to take ownership of conflicting fields.
+func WithForceConflicts() Option {
+	return func(service *Service) {
+		service.forceConflicts = true
 	}
 }
 
@@ -268,10 +276,7 @@ func (s *Service) Ensure(ctx context.Context, obj client.Object, opts ...EnsureO
 
 				created := apierrors.IsNotFound(err)
 
-				// Always force ownership: SSA is idempotent for create and
-				// update, and forcing keeps updates from failing on fields this
-				// manager already owns.
-				if err = s.cli.Apply(ctx, applyObj, client.ForceOwnership, client.FieldOwner(managerField)); err != nil {
+				if err = s.cli.Apply(ctx, applyObj, applyOptions(s.forceConflicts)...); err != nil {
 					return err
 				}
 
@@ -283,6 +288,18 @@ func (s *Service) Ensure(ctx context.Context, obj client.Object, opts ...EnsureO
 			})
 		})
 	})
+}
+
+// applyOptions returns Server-Side Apply options for the configured conflict policy.
+func applyOptions(forceConflicts bool) []client.ApplyOption {
+	opts := make([]client.ApplyOption, 0, 2)
+	opts = append(opts, client.FieldOwner(managerField))
+
+	if forceConflicts {
+		opts = append(opts, client.ForceOwnership)
+	}
+
+	return opts
 }
 
 // PatchOptions collects per-call overrides for Patch.

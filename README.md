@@ -25,6 +25,7 @@ manage their lifecycle.
 - [Features](#features)
 - [Quickstart](#quickstart)
 - [Example](#example)
+- [Requirements](#requirements)
 - [Installation](#installation)
 - [Building](#building)
 - [Usage](#usage)
@@ -43,7 +44,7 @@ the configured cluster. Tests follow a four-level hierarchy:
 
 ```
 Test (suite)   a directory with cases/ and an optional templates/
-  Case         one YAML file: a namespace, objects, hooks, and ordered steps
+  Case         one YAML file: objects, hooks, and ordered steps
     Step       a group of typed actions run in a fixed order
       Action   a single Kubernetes operation
 ```
@@ -106,7 +107,7 @@ kube2e run ./examples --dry-run --tags smoke
 Run against a real cluster:
 
 ```bash
-kube2e run ./examples --kubeconfig ~/.kube/config
+kube2e run ./examples --kubeconfig ~/.kube/config --namespace kube2e-examples
 ```
 
 Scaffold a new suite of your own:
@@ -147,7 +148,6 @@ version: v1
 name: lifecycle
 tags:
   - smoke
-namespace: kube2e-configmap
 
 objects:
   app-config: configmap
@@ -171,6 +171,37 @@ Validate it without cluster writes, then run it:
 kube2e run ./tests --dry-run
 kube2e run ./tests --kubeconfig ~/.kube/config
 ```
+
+## Requirements
+
+### Kubernetes
+
+| Actions used | Minimum cluster version |
+| --- | --- |
+| Any suite containing `exec` | **v1.30** |
+| Everything else (`ensure`, `patch`, `wait`, `assert`, `logs`, `delete`) | **v1.22** |
+
+The v1.22 floor comes from Server-Side Apply, which `ensure` uses for every
+object with the field manager `kube2e` (see
+[Server-Side Apply](docs/server-side-apply.md)).
+
+The v1.30 floor comes from `exec`, which streams over WebSockets using the
+`v5.channel.k8s.io` subprotocol only — there is no SPDY fallback. Servers gained
+that subprotocol via the `TranslateStreamCloseWebsocketRequests` feature gate:
+alpha and off by default in v1.29, beta and **on by default in v1.30**, stable in
+v1.35. On an older cluster every other action still works; only `exec` fails.
+
+kube2e is built against the Kubernetes v1.37 client libraries
+(`k8s.io/client-go v0.37.0`). Following the upstream
+[version skew policy](https://kubernetes.io/releases/version-skew-policy/), those
+clients are supported against v1.36–v1.38 API servers; older clusters back to the
+floors above are expected to work, since kube2e only uses long-stable APIs.
+
+### Go
+
+Building from source requires **Go 1.27.1** or newer, as declared by the `go`
+directive in `go.mod`. Prebuilt binaries and the container image have no Go
+requirement.
 
 ## Installation
 
@@ -236,6 +267,8 @@ kube2e run <dir> [flags]
 |---------------------|--------------------------|----------|----------------------------------------------------|
 | `--kubeconfig`      | `KUBE2E_KUBECONFIG`      | —        | Kubeconfig path; falls back to `$KUBECONFIG` then `~/.kube/config`, then in-cluster |
 | `--tags`            | `KUBE2E_TAGS`            | all      | Comma-separated tags; only matching cases run      |
+| `--namespace`       | `KUBE2E_NAMESPACE`       | `default` | Namespace for namespaced test resources           |
+| `--force-conflicts` | `KUBE2E_FORCE_CONFLICTS` | false    | Take ownership of fields that conflict during Server-Side Apply |
 | `-n, --parallel`    | `KUBE2E_PARALLEL`        | 1        | Number of suites to run concurrently               |
 | `--remote`          | `KUBE2E_REMOTE`          | —        | OCI image that contains test suites                |
 | `--remote-user`     | `KUBE2E_REMOTE_USER`     | —        | Registry username for `--remote`                   |
@@ -247,7 +280,10 @@ kube2e run <dir> [flags]
 
 ```bash
 # Run all suites under ./examples
-kube2e run ./examples
+kube2e run ./examples --namespace kube2e-examples
+
+# Take ownership of fields with Server-Side Apply conflicts
+kube2e run ./examples --force-conflicts
 
 # Run only cases tagged "smoke" or "job"
 kube2e run ./examples --tags smoke,job
@@ -275,9 +311,10 @@ from `<dir>` within it — use `.` for the image root. Private registries accept
 `--remote-user` / `--remote-password`; when the username is omitted, the default
 Docker credential keychain is used.
 
-The `--report-file` report contains aggregate totals and nested test, case, step,
-hook, and action results with their state and failure reason. For remote runs it
-records the image reference and registry username, but never the password.
+The `--report-file` report contains the run namespace, conflict policy,
+aggregate totals, and nested test, case, step, hook, and action results with
+their state and failure reason. For remote runs it records the image reference,
+the resolved image digest, and the registry username, but never the password.
 
 ### Run with Docker
 
@@ -326,9 +363,9 @@ kube2e tests add <name> [flags]
 | `-C, --dir` | `.`     | Parent directory to create the suite in |
 
 Creates `<name>/cases/` and `<name>/templates/` with a starter ConfigMap template
-and a starter case. The case's optional fields (tags, namespace, the other
-actions, hooks, retry, delay, timeout) are written as comments — uncomment what
-you need. The uncommented fields form a minimal, runnable case.
+and a starter case. The case's optional fields (tags, the other actions, hooks,
+retry, delay, timeout) are written as comments — uncomment what you need. The
+uncommented fields form a minimal, runnable case.
 
 ```bash
 # Create ./nginx with a starter case and template
@@ -352,6 +389,7 @@ kube2e tests publish <dir> --remote <image> [flags]
 | `--remote`          | `KUBE2E_TESTS_PUBLISH_REMOTE`          | —       | Image reference to push          |
 | `--remote-user`     | `KUBE2E_TESTS_PUBLISH_REMOTE_USER`     | —       | Registry username for `--remote` |
 | `--remote-password` | `KUBE2E_TESTS_PUBLISH_REMOTE_PASSWORD` | —       | Registry password for `--remote` |
+| `--digest-file`     | `KUBE2E_TESTS_PUBLISH_DIGEST_FILE`     | —       | Write the pushed image digest to this path |
 | `-v, --verbose`     | `KUBE2E_VERBOSE`                       | false   | Include `debug` and `warn` messages |
 
 ```bash
@@ -373,6 +411,20 @@ included, and they are written at the image root. An image built from
 kube2e run . --remote ghcr.io/example/kube2e-tests:v0.1.0
 ```
 
+On success the digest of the pushed image is logged. Because logs share stdout,
+use `--digest-file` when a pipeline needs to read the digest back: it writes the
+bare `sha256:...` line and nothing else, so it can be pinned to a run and matched
+against the `remote.digest` field of that run's report.
+
+```bash
+kube2e tests publish ./examples \
+  --remote ghcr.io/example/kube2e-tests:v0.1.0 \
+  --digest-file digest.txt
+
+kube2e run . --remote "ghcr.io/example/kube2e-tests@$(cat digest.txt)" \
+  --report-file report.yaml
+```
+
 ## Suite layout
 
 ```
@@ -389,9 +441,10 @@ Templates are optional and shared by every case in the suite. Cases execute in
 alphabetical filename order, and all resources applied during a case are deleted
 when it finishes.
 
-A case's `namespace`, if set, is created when absent but **never deleted** —
-kube2e will not remove a namespace it may not own (such as a pre-existing user
-namespace). See [Test suites & case files](docs/suites.md) for the full contract.
+The namespace selected by `--namespace` is created when absent but **never
+deleted** — kube2e will not remove a namespace it may not own (such as a
+pre-existing user namespace). See [Test suites & case files](docs/suites.md) for
+the full contract.
 
 ## Documentation
 

@@ -1,11 +1,10 @@
+# yaml-language-server: $schema=../../../schemas/case.schema.json
 version: v1
 name: silent
 description: Run a pod and assert that its logs contain no errors
 tags:
   - pod
   - logs
-namespace: kube2e-pod
-
 objects:
   checker: pod
 

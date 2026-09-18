@@ -10,7 +10,7 @@ kube2e executes declarative YAML tests in a four-level hierarchy:
 
 ```
 Test (suite)   → a directory with cases/ and optional templates/
-  └─ Case       → one YAML file; owns a namespace, objects, hooks, and steps
+  └─ Case       → one YAML file; owns objects, hooks, and steps
        └─ Step   → an ordered group of typed actions
             └─ Action → a single Kubernetes operation
 ```
