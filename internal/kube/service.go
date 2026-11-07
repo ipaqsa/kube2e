@@ -93,15 +93,7 @@ func WithForceConflicts() Option {
 // support for core types and CRDs, a clientset for pod logs and exec, and a
 // discovery client for server version checks.
 func New(cfg *rest.Config, logger *slog.Logger, opts ...Option) (*Service, error) {
-	svc := &Service{
-		namespace: namespaceDefault,
-		applied:   safe.NewStore[client.Object](),
-		logger:    logger.With("service", "kube"),
-	}
-
-	for _, opt := range opts {
-		opt(svc)
-	}
+	svc := newService(logger, opts...)
 
 	if svc.dryRun {
 		svc.logger.Debug("dry run enabled")
@@ -148,6 +140,22 @@ func New(cfg *rest.Config, logger *slog.Logger, opts ...Option) (*Service, error
 	svc.logger.Debug("service initialized")
 
 	return svc, nil
+}
+
+// newService builds a Service with defaults and opts applied but no clients;
+// New wires real clients, tests inject fakes.
+func newService(logger *slog.Logger, opts ...Option) *Service {
+	svc := &Service{
+		namespace: namespaceDefault,
+		applied:   safe.NewStore[client.Object](),
+		logger:    logger.With("service", "kube"),
+	}
+
+	for _, opt := range opts {
+		opt(svc)
+	}
+
+	return svc
 }
 
 // retryAlways is passed to retryOnError to retry on any error.
