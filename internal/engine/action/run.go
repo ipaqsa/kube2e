@@ -3,6 +3,7 @@ package action
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -18,7 +19,7 @@ const (
 	defaultWaitInterval = 2 * time.Second
 	// defaultWaitTimeout is the hard deadline for Wait and delete-wait.
 	defaultWaitTimeout = 2 * time.Minute
-	// defaultExecTimeout is the hard deadline for a single Exec command.
+	// defaultExecTimeout is the deadline for the whole Exec action, retries included.
 	defaultExecTimeout = 30 * time.Second
 )
 
@@ -45,15 +46,18 @@ func RunEnsure(ctx context.Context, conf *Config, act *Ensure) (*Report, error) 
 	start := time.Now()
 	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	err := conf.Kube.Ensure(ctx, conf.Object,
-		svckube.WithEnsureAnnotations(conf.Annotations),
-		svckube.WithEnsureRetry(act.Retry.attempts(), act.Retry.backoff()))
+	err := runWithTimeout(ctx, act.TimeoutOrDefault(0), func(ctx context.Context) error {
+		return conf.Kube.Ensure(ctx, conf.Object,
+			svckube.WithEnsureAnnotations(conf.Annotations),
+			svckube.WithEnsureRetry(act.Retry.attempts(), act.Retry.backoff()))
+	})
 
 	return finishReport(report, err)
 }
 
 // RunDelete removes the object from the cluster. When act.Wait is true it
-// blocks until the object disappears or act.Time elapses.
+// blocks until the object disappears. The timeout bounds the whole action; with
+// wait it defaults to defaultWaitTimeout, without wait it applies only when set.
 func RunDelete(ctx context.Context, conf *Config, act *Delete) (*Report, error) {
 	report := newReport(NameDelete, act.Target)
 	gvk := conf.Object.GetObjectKind().GroupVersionKind().String()
@@ -68,10 +72,17 @@ func RunDelete(ctx context.Context, conf *Config, act *Delete) (*Report, error) 
 	start := time.Now()
 	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	err := conf.Kube.Delete(ctx, conf.Object,
-		svckube.WithDeleteWait(act.Wait, act.TimeoutOrDefault(defaultWaitTimeout)),
-		svckube.WithDeleteInterval(act.IntervalOrDefault(defaultWaitInterval)),
-		svckube.WithDeleteRetry(act.Retry.attempts(), act.Retry.backoff()))
+	timeout := act.TimeoutOrDefault(0)
+	if act.Wait {
+		timeout = act.TimeoutOrDefault(defaultWaitTimeout)
+	}
+
+	err := runWithTimeout(ctx, timeout, func(ctx context.Context) error {
+		return conf.Kube.Delete(ctx, conf.Object,
+			svckube.WithDeleteWait(act.Wait, timeout),
+			svckube.WithDeleteInterval(act.IntervalOrDefault(defaultWaitInterval)),
+			svckube.WithDeleteRetry(act.Retry.attempts(), act.Retry.backoff()))
+	})
 
 	return finishReport(report, err)
 }
@@ -118,8 +129,10 @@ func RunPatch(ctx context.Context, conf *Config, act *Patch) (*Report, error) {
 	start := time.Now()
 	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	err := conf.Kube.Patch(ctx, conf.Object, act.Patches,
-		svckube.WithPatchRetry(act.Retry.attempts(), act.Retry.backoff()))
+	err := runWithTimeout(ctx, act.TimeoutOrDefault(0), func(ctx context.Context) error {
+		return conf.Kube.Patch(ctx, conf.Object, act.Patches,
+			svckube.WithPatchRetry(act.Retry.attempts(), act.Retry.backoff()))
+	})
 
 	return finishReport(report, err)
 }
@@ -141,14 +154,17 @@ func RunAssert(ctx context.Context, conf *Config, act *Assert) (*Report, error) 
 	start := time.Now()
 	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	err := conf.Kube.Check(ctx, conf.Object, act.Conditions,
-		svckube.WithCheckRetry(act.Retry.attempts(), act.Retry.backoff()))
+	err := runWithTimeout(ctx, act.TimeoutOrDefault(0), func(ctx context.Context) error {
+		return conf.Kube.Check(ctx, conf.Object, act.Conditions,
+			svckube.WithCheckRetry(act.Retry.attempts(), act.Retry.backoff()))
+	})
 
 	return finishReport(report, err)
 }
 
 // RunLogs checks the logs of the named Pod against act.Contains using the
-// configured match policy.
+// configured match policy. The timeout is owned by the poll, not wrapped here:
+// for match none it is the observation window, whose end is the success path.
 func RunLogs(ctx context.Context, conf *Config, act *Logs) (*Report, error) {
 	report := newReport(NameLogs, act.Target)
 	log := conf.Logger.With("action", "logs", "target", targetName(conf, act.Target))
@@ -186,10 +202,11 @@ func RunExec(ctx context.Context, conf *Config, act *Exec) (*Report, error) {
 	start := time.Now()
 	defer func() { log.Debug("action finished", "duration", time.Since(start)) }()
 
-	err := conf.Kube.Exec(ctx, podTarget(conf, act.Target), act.Command,
-		svckube.WithExecContainer(act.Container),
-		svckube.WithExecRetry(act.Retry.attempts(), act.Retry.backoff()),
-		svckube.WithExecTimeout(act.TimeoutOrDefault(defaultExecTimeout)))
+	err := runWithTimeout(ctx, act.TimeoutOrDefault(defaultExecTimeout), func(ctx context.Context) error {
+		return conf.Kube.Exec(ctx, podTarget(conf, act.Target), act.Command,
+			svckube.WithExecContainer(act.Container),
+			svckube.WithExecRetry(act.Retry.attempts(), act.Retry.backoff()))
+	})
 
 	return finishReport(report, err)
 }
@@ -232,4 +249,28 @@ func applyDelay(ctx context.Context, log *slog.Logger, delay *metav1.Duration) e
 	case <-timer.C:
 		return nil
 	}
+}
+
+// runWithTimeout runs fn under ctx bounded by timeout, so every attempt, nested
+// retry, and backoff of the action share one deadline. A zero timeout leaves ctx
+// unbounded. When the action's own deadline (not the parent's) stopped it, the
+// error says so and still satisfies errors.Is(context.DeadlineExceeded).
+func runWithTimeout(ctx context.Context, timeout time.Duration, fn func(context.Context) error) error {
+	if timeout <= 0 {
+		return fn(ctx)
+	}
+
+	actionCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	err := fn(actionCtx)
+	if err != nil && ctx.Err() == nil && errors.Is(actionCtx.Err(), context.DeadlineExceeded) {
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("action timeout %s exceeded: %w: %w", timeout, context.DeadlineExceeded, err)
+		}
+
+		return fmt.Errorf("action timeout %s exceeded: %w", timeout, err)
+	}
+
+	return err
 }

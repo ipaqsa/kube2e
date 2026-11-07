@@ -8,7 +8,8 @@ ensure → patch → wait → assert → logs → exec → delete
 ```
 
 The first failure aborts the step unless the step is `optional: true`. See
-[Steps](steps.md) for the shared `delay` and `retry` fields.
+[Steps](steps.md) for the shared `delay`, `retry`, and `timeout` fields and
+for how cancellation is handled.
 
 ## `ensure`
 
@@ -25,6 +26,7 @@ ensure:
   retry:
     attempts: <int>
     backoff: <duration>
+  timeout: <duration>  # deadline for the whole action, retries included (default: none)
 ```
 
 ## `patch`
@@ -54,6 +56,7 @@ patch:
   retry:
     attempts: <int>
     backoff: <duration>
+  timeout: <duration>  # deadline for the whole action, retries included (default: none)
 ```
 
 ## `wait`
@@ -101,6 +104,7 @@ assert:
   retry:
     attempts: <int>
     backoff: <duration>
+  timeout: <duration>  # deadline for the whole action, retries included (default: none)
 ```
 
 ## `logs`
@@ -155,7 +159,9 @@ retried silently. For `none` they are not — see below.
 
 Because `none` is an absence assertion, it cannot pass early: the step always
 takes the full `timeout`. Keep that window short (seconds, not the 2m default)
-and set it to the span the string would realistically appear in.
+and set it to the span the string would realistically appear in. Only the
+window elapsing passes: canceling the run mid-window fails the step, and so does
+a read error even if it is itself a timeout.
 
 ## `exec`
 
@@ -185,8 +191,11 @@ exec:
   retry:
     attempts: <int>
     backoff: <duration>
-  timeout: <duration>    # hard deadline for the command (default: 30s)
+  timeout: <duration>    # deadline for all attempts together, backoff included (default: 30s)
 ```
+
+`timeout` is shared by every attempt: with `retry`, size it for all of them
+(attempts × command time + backoff), not for a single command.
 
 Use `["sh", "-c", "..."]` to run shell expressions. On failure, the command's
 stderr is included in the returned error.
@@ -202,7 +211,7 @@ delete:
     object: <string>   # required — key in the case objects map
   wait: <bool>           # block until object is gone (default: false)
   interval: <duration>   # poll interval for the post-delete wait  (default: 2s)
-  timeout: <duration>    # hard deadline for the post-delete wait  (default: 2m)
+  timeout: <duration>    # deadline for delete retries + post-delete wait (default: 2m with wait, none without)
   retry:
     attempts: <int>
     backoff: <duration>

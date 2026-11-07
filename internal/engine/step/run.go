@@ -75,7 +75,9 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 	report.Passed, report.Failed = countActions(actions)
 	report.Stats = objectStats(actions)
 
-	if err != nil && conf.Step.Optional {
+	// An optional step tolerates its own failures, including an action timeout,
+	// but never a canceled or expired run: that must still stop the suite.
+	if err != nil && conf.Step.Optional && ctx.Err() == nil {
 		svc.logger.Warn("optional step failed", "error", err)
 
 		report.FinishedAt = time.Now()

@@ -156,18 +156,68 @@ func New(cfg *rest.Config, logger *slog.Logger, opts ...Option) (*Service, error
 	return svc, nil
 }
 
-// retryAlways is passed to retry.OnError to retry on any error.
+// retryAlways is passed to retryOnError to retry on any error.
 var retryAlways = func(_ error) bool { return true }
 
 // retryBackoff builds a constant-interval wait.Backoff for user-configured retry.
-// attempts is the total number of calls; Steps must be >= 1 or retry.OnError
-// never invokes the function and silently returns nil.
+// attempts is the total number of calls, clamped to at least one.
 func retryBackoff(attempts int, backoff time.Duration) wait.Backoff {
 	return wait.Backoff{
 		Steps:    max(attempts, 1),
 		Duration: backoff,
 		Factor:   1.0,
 	}
+}
+
+// retryOnError calls fn until it succeeds, fails with an error retriable rejects,
+// or backoff.Steps attempts are spent. Unlike retry.OnError it obeys ctx: the
+// sleep between attempts ends as soon as ctx is done and no attempt starts after.
+func retryOnError(ctx context.Context, backoff wait.Backoff, retriable func(error) bool, fn func() error) error {
+	var lastErr error
+
+	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return withContextErr(ctxErr, lastErr)
+		}
+
+		lastErr = fn()
+		if lastErr == nil {
+			return nil
+		}
+
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return withContextErr(ctxErr, lastErr)
+		}
+
+		if !retriable(lastErr) || backoff.Steps <= 1 {
+			return lastErr
+		}
+
+		// Step decrements Steps and returns the next (jittered, capped) delay.
+		timer := time.NewTimer(backoff.Step())
+
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+
+			return withContextErr(ctx.Err(), lastErr)
+		case <-timer.C:
+		}
+	}
+}
+
+// withContextErr returns an error that satisfies errors.Is(ctxErr) and keeps the
+// last attempt's error, if any, for diagnostics.
+func withContextErr(ctxErr, lastErr error) error {
+	if lastErr == nil {
+		return ctxErr
+	}
+
+	if errors.Is(lastErr, ctxErr) {
+		return lastErr
+	}
+
+	return fmt.Errorf("%w (last attempt: %w)", ctxErr, lastErr)
 }
 
 // EnsureOptions collects per-call overrides for Ensure.
@@ -235,9 +285,9 @@ func (s *Service) Ensure(ctx context.Context, obj client.Object, opts ...EnsureO
 		opt(ensureOpts)
 	}
 
-	return retry.OnError(ensureOpts.Retry, retryAlways, func() error {
-		return retry.OnError(retry.DefaultBackoff, apierrors.IsServerTimeout, func() error {
-			return retry.OnError(retry.DefaultBackoff, apierrors.IsServiceUnavailable, func() error {
+	return retryOnError(ctx, ensureOpts.Retry, retryAlways, func() error {
+		return retryOnError(ctx, retry.DefaultBackoff, apierrors.IsServerTimeout, func() error {
+			return retryOnError(ctx, retry.DefaultBackoff, apierrors.IsServiceUnavailable, func() error {
 				if err := s.setNamespace(obj); err != nil {
 					return fmt.Errorf("set namespace for the object '%s': %w", obj.GetName(), err)
 				}
@@ -347,10 +397,10 @@ func (s *Service) Patch(ctx context.Context, obj client.Object, patches patch.Pa
 	gvk := obj.GetObjectKind().GroupVersionKind()
 	key := client.ObjectKeyFromObject(obj)
 
-	return retry.OnError(patchOpts.Retry, retryAlways, func() error {
+	return retryOnError(ctx, patchOpts.Retry, retryAlways, func() error {
 		// Re-read and re-apply on conflict so a concurrent update does not fail
 		// the whole patch.
-		return retry.OnError(retry.DefaultBackoff, apierrors.IsConflict, func() error {
+		return retryOnError(ctx, retry.DefaultBackoff, apierrors.IsConflict, func() error {
 			live := &unstructured.Unstructured{}
 			live.SetGroupVersionKind(gvk)
 
@@ -451,9 +501,9 @@ func (s *Service) Delete(ctx context.Context, obj client.Object, opts ...DeleteO
 		opt(deleteOpts)
 	}
 
-	if err := retry.OnError(deleteOpts.Retry, retryAlways, func() error {
-		return retry.OnError(retry.DefaultBackoff, apierrors.IsServerTimeout, func() error {
-			return retry.OnError(retry.DefaultBackoff, apierrors.IsServiceUnavailable, func() error {
+	if err := retryOnError(ctx, deleteOpts.Retry, retryAlways, func() error {
+		return retryOnError(ctx, retry.DefaultBackoff, apierrors.IsServerTimeout, func() error {
+			return retryOnError(ctx, retry.DefaultBackoff, apierrors.IsServiceUnavailable, func() error {
 				if err := s.setNamespace(obj); err != nil {
 					return fmt.Errorf("set namespace for the object '%s': %w", obj.GetName(), err)
 				}
@@ -657,7 +707,13 @@ func (s *Service) Wait(ctx context.Context, obj client.Object, opts ...WaitOptio
 		}
 	}
 
-	return ctx.Err()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("wait for %s %q: %w", id.GroupKind.Kind, id.Name, ctxErr)
+	}
+
+	// The poller only closes its channel once ctx is done; anything else must
+	// not be mistaken for the conditions passing.
+	return fmt.Errorf("wait for %s %q: status poller stopped unexpectedly", id.GroupKind.Kind, id.Name)
 }
 
 // CheckOptions collects per-call overrides for Check.
@@ -693,7 +749,7 @@ func (s *Service) Check(ctx context.Context, obj client.Object, conditions []str
 		opt(checkOpts)
 	}
 
-	return retry.OnError(checkOpts.Retry, retryAlways, func() error {
+	return retryOnError(ctx, checkOpts.Retry, retryAlways, func() error {
 		if err := s.setNamespace(obj); err != nil {
 			return fmt.Errorf("set namespace for object '%s': %w", obj.GetName(), err)
 		}
@@ -1040,7 +1096,9 @@ func (s *Service) logsPresent(
 			return matched > 0, nil
 		})
 	if pollErr != nil {
-		return fmt.Errorf("%w: %q not found in logs of %s", interrors.ErrLogsNotContain, expected, desc)
+		// Keep pollErr in the chain so callers can tell a timeout or cancellation
+		// apart with errors.Is.
+		return fmt.Errorf("%w: %q not found in logs of %s: %w", interrors.ErrLogsNotContain, expected, desc, pollErr)
 	}
 
 	return nil
@@ -1192,7 +1250,6 @@ func (s *Service) resolvePodsForLogs(ctx context.Context, target PodTarget, logO
 type ExecOptions struct {
 	container string
 	retry     wait.Backoff
-	timeout   time.Duration
 }
 
 // ExecOptionFunc is a functional option for a single Exec call.
@@ -1213,18 +1270,10 @@ func WithExecRetry(attempts int, backoff time.Duration) ExecOptionFunc {
 	}
 }
 
-// WithExecTimeout sets a hard deadline for the exec call. Zero values are ignored.
-func WithExecTimeout(timeout time.Duration) ExecOptionFunc {
-	return func(o *ExecOptions) {
-		if timeout > 0 {
-			o.timeout = timeout
-		}
-	}
-}
-
 // Exec runs command inside the resolved pod and succeeds when the command
 // exits with code zero. obj may be a Pod, Deployment, ReplicaSet, or
-// StatefulSet — workload types resolve to a single Running pod.
+// StatefulSet — workload types resolve to a single Running pod. ctx bounds every
+// attempt and the backoff between them; callers set the deadline.
 func (s *Service) Exec(ctx context.Context, target PodTarget, command []string, opts ...ExecOptionFunc) error {
 	if err := target.validate(); err != nil {
 		return err
@@ -1242,15 +1291,7 @@ func (s *Service) Exec(ctx context.Context, target PodTarget, command []string, 
 		opt(execOpts)
 	}
 
-	if execOpts.timeout > 0 {
-		var cancel context.CancelFunc
-
-		ctx, cancel = context.WithTimeout(ctx, execOpts.timeout)
-
-		defer cancel()
-	}
-
-	return retry.OnError(execOpts.retry, retryAlways, func() error {
+	return retryOnError(ctx, execOpts.retry, retryAlways, func() error {
 		ns, podName, err := s.resolvePodForExec(ctx, target)
 		if err != nil {
 			return fmt.Errorf("resolve pod for exec: %w", err)

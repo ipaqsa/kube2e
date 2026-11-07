@@ -74,7 +74,10 @@ func Run(ctx context.Context, conf *Config) (*Report, error) {
 		}
 
 		if caseErr != nil {
-			if errors.Is(caseErr, context.Canceled) || errors.Is(caseErr, context.DeadlineExceeded) {
+			// Stop only when the run itself is over. An action's own timeout also
+			// surfaces as DeadlineExceeded, but it fails just this case: cleanup
+			// already ran and the next case starts.
+			if ctx.Err() != nil {
 				return caseErr
 			}
 

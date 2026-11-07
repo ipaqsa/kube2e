@@ -159,10 +159,9 @@ func (a *Delete) IntervalOrDefault(def time.Duration) time.Duration {
 	return a.Interval.Duration
 }
 
-// TimeoutOrDefault returns the delete-wait timeout or falls back to the
-// provided default when unset. Shadows actionOptions.TimeoutOrDefault so that
-// the Delete-level Timeout field (not the embedded one) is read.
-func (a *Delete) TimeoutOrDefault(def time.Duration) time.Duration {
+// TimeoutOrDefault returns the ensure timeout or falls back to the provided
+// default when unset. Ensure does not embed actionOptions, so it needs its own.
+func (a *Ensure) TimeoutOrDefault(def time.Duration) time.Duration {
 	if a.Timeout == nil || a.Timeout.Duration <= 0 {
 		return def
 	}
