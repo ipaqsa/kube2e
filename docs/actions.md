@@ -133,8 +133,9 @@ logs:
   timeout: <duration>   # deadline, or watch window for match: none (default: 2m)
 ```
 
-Fresh logs (last 200 lines) are streamed on every tick. Transient errors (pod
-not yet scheduled, container still initializing) are retried silently.
+Fresh logs (last 400 lines) are streamed on every tick. For `any` and `all`,
+transient errors (pod not yet scheduled, container still initializing) are
+retried silently. For `none` they are not — see below.
 
 **Match policies:**
 
@@ -145,7 +146,12 @@ not yet scheduled, container still initializing) are retried silently.
   never make the check pass. Times out with `ErrLogsNotContain`.
 - `none` — watch the logs for the **whole** `timeout` and fail with
   `ErrLogsContainForbidden` the moment the string appears in any pod. Succeeds
-  only once the window has elapsed without a match.
+  only once the window has elapsed with every tick reading every pod's logs
+  without a match. If the target's pods cannot be resolved (no pods, workload
+  missing, RBAC denies listing) or any pod's logs cannot be read (container not
+  started, `pods/log` forbidden), the step fails immediately with
+  `ErrLogsUnavailable`: unread logs prove nothing about absence. Make sure the
+  pods are running before a `none` step, e.g. with a preceding `wait`.
 
 Because `none` is an absence assertion, it cannot pass early: the step always
 takes the full `timeout`. Keep that window short (seconds, not the 2m default)
