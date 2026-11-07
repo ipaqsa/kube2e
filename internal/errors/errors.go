@@ -16,6 +16,8 @@ var (
 	ErrLogsNotContain = errors.New("logs do not contain expected string")
 	// ErrLogsContainForbidden is returned when pod logs contain a string the match policy forbids.
 	ErrLogsContainForbidden = errors.New("logs contain forbidden string")
+	// ErrLogsUnavailable is returned when pods cannot be resolved or their logs cannot be read.
+	ErrLogsUnavailable = errors.New("pod logs unavailable")
 	// ErrObjectNoGVK is returned when an object has an empty GroupVersionKind.
 	ErrObjectNoGVK = errors.New("object GVK is empty")
 	// ErrNilRestConfig is returned when a nil *rest.Config is passed to kube.New.
