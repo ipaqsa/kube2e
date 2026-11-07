@@ -71,4 +71,32 @@ retry:
 `wait` and `logs` poll on their own schedule — tune their `interval` and
 `timeout` fields instead of using `retry`.
 
+## `timeout`
+
+Every action accepts an optional `timeout: <duration>`. It bounds the **whole
+action**: every `retry` attempt, the `backoff` between attempts, and kube2e's
+internal retries on transient API errors all share one deadline. `delay` runs
+before the action and does not count against it.
+
+| Action | Default | Notes |
+|--------|---------|-------|
+| `ensure`, `patch`, `assert` | none | No deadline unless set. |
+| `wait` | `2m` | Polling stops at the deadline. |
+| `exec` | `30s` | Covers all attempts together, not one command. |
+| `delete` | `2m` with `wait: true`, none otherwise | Covers the delete retries and the post-delete wait. |
+| `logs` | `2m` | `any`/`all`: deadline. `none`: observation window — see [`logs`](actions.md#logs). |
+
+When an action's timeout expires, the action fails with `action timeout <d>
+exceeded: context deadline exceeded …`. That fails the step (or is skipped if
+the step is `optional`) and therefore the case. Cleanup still runs and the
+**next case starts as usual**.
+
+## Cancellation
+
+When the run itself is canceled (Ctrl-C) or its own deadline expires, the
+in-flight action stops immediately: a `backoff` or `delay` sleep ends at once
+and no further attempt starts. Cleanup of the current case still runs on a
+separate context bounded to 30s, then the suite stops — the remaining cases are
+not run. An `optional` step does not swallow a cancellation.
+
 For the full per-action field reference, see [Actions](actions.md).

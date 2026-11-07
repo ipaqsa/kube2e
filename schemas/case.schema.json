@@ -206,7 +206,7 @@
           "default": 1
         },
         "backoff": {
-          "description": "Delay between attempts.",
+          "description": "Delay between attempts. Cut short when the action timeout expires or the run is canceled; no further attempt starts.",
           "$ref": "#/$defs/kubernetesDuration",
           "default": "0s"
         }
@@ -286,7 +286,7 @@
           "default": "0s"
         },
         "timeout": {
-          "description": "Optional action deadline.",
+          "description": "Deadline for the whole action: every retry attempt, the backoff between attempts, and internal retries on transient API errors share it. Unset means no deadline.",
           "$ref": "#/$defs/kubernetesDuration"
         }
       }
@@ -320,7 +320,7 @@
           "default": "0s"
         },
         "timeout": {
-          "description": "Optional action deadline.",
+          "description": "Deadline for the whole action: every retry attempt, the backoff between attempts, and internal retries on transient API errors share it. Unset means no deadline.",
           "$ref": "#/$defs/kubernetesDuration"
         }
       }
@@ -435,7 +435,7 @@
           "default": "0s"
         },
         "timeout": {
-          "description": "Hard deadline for polling.",
+          "description": "Hard deadline for the whole polling loop.",
           "$ref": "#/$defs/kubernetesDuration",
           "default": "2m"
         }
@@ -471,7 +471,7 @@
           "default": "0s"
         },
         "timeout": {
-          "description": "Optional action deadline.",
+          "description": "Deadline for the whole action: every retry attempt, the backoff between attempts, and internal retries on transient API errors share it. Unset means no deadline.",
           "$ref": "#/$defs/kubernetesDuration"
         }
       }
@@ -518,7 +518,7 @@
           "default": "0s"
         },
         "timeout": {
-          "description": "Hard deadline for log polling; with match none it is the observation window and the action always runs for its full duration.",
+          "description": "Hard deadline for log polling; with match none it is the observation window and the action always runs for its full duration, while a canceled run or unreadable logs fail it instead of passing.",
           "$ref": "#/$defs/kubernetesDuration",
           "default": "2m"
         }
@@ -557,7 +557,7 @@
           "default": "0s"
         },
         "timeout": {
-          "description": "Hard deadline for one command execution.",
+          "description": "Deadline for the whole exec action: every retry attempt and the backoff between them share it, so size it for all attempts, not one command.",
           "$ref": "#/$defs/kubernetesDuration",
           "default": "30s"
         }
@@ -593,7 +593,7 @@
           "default": "0s"
         },
         "timeout": {
-          "description": "Hard deadline while waiting for deletion.",
+          "description": "Deadline for the whole delete action: delete retries, their backoff, and the post-delete wait share it. Defaults to 2m when wait is true; without wait it applies only when set.",
           "$ref": "#/$defs/kubernetesDuration",
           "default": "2m"
         }
