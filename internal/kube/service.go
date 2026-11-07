@@ -1,4 +1,4 @@
-// Package kube wraps controller-runtime and kstatus to provide Server-Side Apply,
+// Package kube wraps controller-runtime to provide Server-Side Apply,
 // deletion, conditional waiting, and JQ-based value extraction for Kubernetes objects.
 package kube
 
@@ -30,10 +30,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/util/retry"
-	"sigs.k8s.io/cli-utils/pkg/kstatus/polling"
-	"sigs.k8s.io/cli-utils/pkg/kstatus/polling/event"
-	"sigs.k8s.io/cli-utils/pkg/kstatus/status"
-	"sigs.k8s.io/cli-utils/pkg/object"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	interrors "github.com/ipaqsa/kube2e/internal/errors"
@@ -47,7 +43,7 @@ const (
 
 	namespaceDefault = "default"
 
-	// waitInterval is the default kstatus poll cadence used for delete-wait.
+	// waitInterval is the default poll cadence for Wait and delete-wait.
 	waitInterval = 2 * time.Second
 )
 
@@ -58,7 +54,6 @@ type Service struct {
 	clientset      kubernetes.Interface
 	restCfg        *rest.Config
 	namespace      string
-	poller         *polling.StatusPoller
 	disc           discovery.DiscoveryInterface
 	applied        *safe.Store[client.Object]
 	logger         *slog.Logger
@@ -95,8 +90,8 @@ func WithForceConflicts() Option {
 }
 
 // New builds a Service from cfg. It constructs a controller-runtime client with
-// support for core types and CRDs, a kstatus poller for condition watching, and
-// a discovery client for server version checks.
+// support for core types and CRDs, a clientset for pod logs and exec, and a
+// discovery client for server version checks.
 func New(cfg *rest.Config, logger *slog.Logger, opts ...Option) (*Service, error) {
 	svc := &Service{
 		namespace: namespaceDefault,
@@ -149,7 +144,6 @@ func New(cfg *rest.Config, logger *slog.Logger, opts ...Option) (*Service, error
 	}
 
 	svc.cli = cli
-	svc.poller = polling.NewStatusPoller(cli, cli.RESTMapper(), polling.Options{})
 
 	svc.logger.Debug("service initialized")
 
@@ -468,7 +462,7 @@ func WithDeleteWait(wait bool, timeout time.Duration) DeleteOptionFunc {
 	}
 }
 
-// WithDeleteInterval sets the kstatus poll interval for the post-delete wait.
+// WithDeleteInterval sets the poll interval for the post-delete wait.
 // Zero values are ignored and the service default is used.
 func WithDeleteInterval(interval time.Duration) DeleteOptionFunc {
 	return func(o *DeleteOptions) {
@@ -579,10 +573,10 @@ type WaitOptions struct {
 // WaitOptionFunc is a functional option for a single Wait call.
 type WaitOptionFunc func(*WaitOptions)
 
-// WithWaitInterval sets the kstatus poll interval. Zero values are ignored.
+// WithWaitInterval sets the poll interval. Zero and negative values are ignored.
 func WithWaitInterval(interval time.Duration) WaitOptionFunc {
 	return func(o *WaitOptions) {
-		if interval == 0 {
+		if interval <= 0 {
 			return
 		}
 
@@ -609,7 +603,7 @@ func WithWaitConditions(conditions []string) WaitOptionFunc {
 	}
 }
 
-// WithOnDeletion makes Wait succeed once the object reaches NotFoundStatus,
+// WithOnDeletion makes Wait succeed once a GET of the object returns NotFound,
 // instead of waiting for it to satisfy conditions.
 func WithOnDeletion(onDeletion bool) WaitOptionFunc {
 	return func(o *WaitOptions) {
@@ -617,9 +611,11 @@ func WithOnDeletion(onDeletion bool) WaitOptionFunc {
 	}
 }
 
-// Wait polls obj using kstatus until all JQ conditions pass, the object is
-// deleted (when WithOnDeletion is set), or the context/timeout expires.
-func (s *Service) Wait(ctx context.Context, obj client.Object, opts ...WaitOptionFunc) error { //nolint:gocyclo // not worth simplifying
+// Wait polls obj with a direct GET on every interval until all JQ conditions
+// pass, the object is deleted (when WithOnDeletion is set), or the
+// context/timeout expires. Each tick reads the live object, so any field change
+// is seen, including status-only updates that leave metadata.generation as is.
+func (s *Service) Wait(ctx context.Context, obj client.Object, opts ...WaitOptionFunc) error {
 	if obj == nil {
 		return interrors.ErrNilObject
 	}
@@ -633,23 +629,17 @@ func (s *Service) Wait(ctx context.Context, obj client.Object, opts ...WaitOptio
 		return fmt.Errorf("set namespace for the object '%s': %w", obj.GetName(), err)
 	}
 
-	s.logger.Debug("wait for conditions",
-		"name", obj.GetName(),
-		"gvk", obj.GetObjectKind().GroupVersionKind().String(),
-		"namespace", obj.GetNamespace())
+	gvk := obj.GetObjectKind().GroupVersionKind()
+	key := client.ObjectKeyFromObject(obj)
+	desc := fmt.Sprintf("%s %q", gvk.Kind, obj.GetName())
 
-	id := object.ObjMetadata{
-		GroupKind: obj.GetObjectKind().GroupVersionKind().GroupKind(),
-		Name:      obj.GetName(),
-		Namespace: obj.GetNamespace(),
-	}
+	s.logger.Debug("wait for conditions", "name", obj.GetName(), "gvk", gvk.String(), "namespace", obj.GetNamespace())
 
-	waitOpts := new(WaitOptions)
+	waitOpts := &WaitOptions{interval: waitInterval}
 	for _, opt := range opts {
 		opt(waitOpts)
 	}
 
-	// enforce timeout
 	if waitOpts.timeout > 0 {
 		var cancel context.CancelFunc
 
@@ -658,62 +648,109 @@ func (s *Service) Wait(ctx context.Context, obj client.Object, opts ...WaitOptio
 		defer cancel()
 	}
 
-	pollOpts := polling.PollOptions{PollInterval: waitOpts.interval}
-	for ev := range s.poller.Poll(ctx, object.ObjMetadataSet{id}, pollOpts) {
-		switch ev.Type {
-		case event.ErrorEvent:
-			return ev.Error
+	probe := &waitProbe{
+		svc:       s,
+		gvk:       gvk,
+		key:       key,
+		desc:      desc,
+		opts:      waitOpts,
+		lastState: "not observed yet",
+	}
 
-		case event.SyncEvent, event.ResourceUpdateEvent:
-			// ev.Resource is nil for SyncEvent; guard before any deref.
-			if ev.Resource == nil || ev.Resource.Identifier != id {
-				continue
-			}
-
-			// deletion mode: finish when kstatus says NotFound (its manifest
-			// Resource is nil, so this must run before the nil-manifest guard).
-			if waitOpts.onDeletion && ev.Resource.Status == status.NotFoundStatus {
-				return nil
-			}
-
-			if ev.Resource.Resource == nil {
-				continue
-			}
-
-			if len(waitOpts.conditions) == 0 {
-				return nil
-			}
-
-			allPassed := true
-
-			for _, cond := range waitOpts.conditions {
-				pass, err := filter.Pass(ctx, ev.Resource.Resource, cond)
-				if err != nil {
-					return fmt.Errorf("filter resource update by the condition '%s': %w", cond, err)
-				}
-
-				if !pass {
-					allPassed = false
-					break
-				}
-			}
-
-			if allPassed {
-				return nil
-			}
-
-		default:
-			continue
-		}
+	pollErr := wait.PollUntilContextCancel(ctx, waitOpts.interval, true, probe.tick)
+	if pollErr == nil {
+		return nil
 	}
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fmt.Errorf("wait for %s %q: %w", id.GroupKind.Kind, id.Name, ctxErr)
+		return fmt.Errorf("wait for %s: %w (last state: %s)", desc, ctxErr, probe.lastState)
 	}
 
-	// The poller only closes its channel once ctx is done; anything else must
-	// not be mistaken for the conditions passing.
-	return fmt.Errorf("wait for %s %q: status poller stopped unexpectedly", id.GroupKind.Kind, id.Name)
+	return fmt.Errorf("wait for %s: %w", desc, pollErr)
+}
+
+// waitProbe evaluates one Wait tick against the live object and remembers why
+// the last tick did not pass, so a timeout error can say what was missing.
+type waitProbe struct {
+	svc       *Service
+	gvk       schema.GroupVersionKind
+	key       client.ObjectKey
+	desc      string
+	opts      *WaitOptions
+	lastState string
+}
+
+// tick reads the live object and reports whether the wait is satisfied. NotFound
+// and transient API errors keep polling; any other error ends the wait.
+func (p *waitProbe) tick(ctx context.Context) (bool, error) {
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(p.gvk)
+
+	err := p.svc.cli.Get(ctx, p.key, live)
+
+	switch {
+	case err == nil:
+	case apierrors.IsNotFound(err):
+		if p.opts.onDeletion {
+			return true, nil
+		}
+
+		// The object may not exist yet (created by a controller); keep polling.
+		p.lastState = "object not found"
+
+		return false, nil
+	case ctx.Err() != nil:
+		// The read was cut short by the deadline or cancellation; the poll
+		// reports the context error itself.
+		return false, nil
+	case isTransientAPIError(err):
+		p.svc.logger.Debug("wait: transient get error, retrying", "target", p.desc, "error", err)
+		p.lastState = err.Error()
+
+		return false, nil
+	default:
+		return false, fmt.Errorf("get object: %w", err)
+	}
+
+	if p.opts.onDeletion {
+		p.lastState = "object still exists"
+		if live.GetDeletionTimestamp() != nil {
+			p.lastState = "object is terminating"
+		}
+
+		return false, nil
+	}
+
+	return p.conditionsPass(ctx, live)
+}
+
+// conditionsPass evaluates every JQ condition against live, stopping at the
+// first one that does not hold.
+func (p *waitProbe) conditionsPass(ctx context.Context, live *unstructured.Unstructured) (bool, error) {
+	for _, cond := range p.opts.conditions {
+		pass, err := filter.Pass(ctx, live, cond)
+		if err != nil {
+			return false, fmt.Errorf("evaluate condition '%s': %w", cond, err)
+		}
+
+		if !pass {
+			p.lastState = "condition not satisfied: " + cond
+
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+// isTransientAPIError reports whether err is a server-side condition worth
+// polling through rather than failing the wait on.
+func isTransientAPIError(err error) bool {
+	return apierrors.IsServerTimeout(err) ||
+		apierrors.IsTimeout(err) ||
+		apierrors.IsServiceUnavailable(err) ||
+		apierrors.IsTooManyRequests(err) ||
+		apierrors.IsInternalError(err)
 }
 
 // CheckOptions collects per-call overrides for Check.
